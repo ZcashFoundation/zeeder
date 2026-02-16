@@ -34,7 +34,7 @@ governor = "0.10"
 
 [dev-dependencies]
 tokio-test = "0.4.5"
-proptest = "1.5"
+proptest = "1.10"
 hickory-resolver = "0.25.2"
 tracing-test = "0.2"
 
