@@ -38,6 +38,7 @@ pub fn spawn(
     rpc_tip: Option<RpcTipState>,
 ) -> (watch::Receiver<TipFilterSnapshot>, JoinHandle<()>) {
     let (tx, rx) = watch::channel(TipFilterSnapshot::disabled());
+    let probe_rx = rx.clone();
 
     let handle = tokio::spawn(async move {
         let probes = ProbeMap::new();
@@ -47,6 +48,7 @@ pub fn spawn(
         let interval = Duration::from_secs(config.probe_interval_secs);
         let stale_after = Duration::from_secs(config.probe_stale_after_secs);
         let probe_timeout = Duration::from_secs(config.probe_timeout_secs);
+        let tip_tolerance = config.tip_tolerance_blocks;
 
         loop {
             run_cycle(
@@ -58,6 +60,8 @@ pub fn spawn(
                 probe_timeout,
                 stale_after,
                 &mut last_attempt,
+                &probe_rx,
+                tip_tolerance,
             )
             .await;
 
@@ -83,6 +87,8 @@ async fn run_cycle(
     probe_timeout: Duration,
     stale_after: Duration,
     last_attempt: &mut HashMap<PeerSocketAddr, Instant>,
+    snapshot_rx: &watch::Receiver<TipFilterSnapshot>,
+    tip_tolerance: u32,
 ) {
     let candidates = select_candidates(address_book, probes, last_attempt, stale_after);
 
@@ -101,6 +107,7 @@ async fn run_cycle(
         let network = network.clone();
         let user_agent = user_agent.to_owned();
         let probes = probes.clone();
+        let probe_rx = snapshot_rx.clone();
         joinset.spawn(async move {
             let _permit = match sem.acquire_owned().await {
                 Ok(p) => p,
@@ -122,17 +129,35 @@ async fn run_cycle(
                     let height = client.connection_info.remote.start_height.0;
                     let user_agent = client.connection_info.remote.user_agent.clone();
                     drop(client);
-                    let accepted = probes.record_success(addr, height);
+                    let recorded = probes.record_success(addr, height);
                     counter!("seeder.probes.succeeded_total").increment(1);
+                    // Classify against the most-recently-published reference tip
+                    // (i.e., the tip the DNS-serving path is currently using).
+                    let status: &'static str = if !recorded {
+                        "outlier_rejected"
+                    } else {
+                        let snap = probe_rx.borrow();
+                        match snap.reference_tip {
+                            None => "tip_unknown",
+                            Some(tip) => {
+                                let floor = tip.saturating_sub(tip_tolerance);
+                                if height >= floor {
+                                    "synced"
+                                } else {
+                                    "behind"
+                                }
+                            }
+                        }
+                    };
                     // `PeerSocketAddr`'s Display redacts the IP; deref for the real one.
                     tracing::debug!(
                         peer = %*addr,
                         height,
                         user_agent = %user_agent,
-                        accepted,
+                        status,
                         "peer height observed",
                     );
-                    if !accepted {
+                    if !recorded {
                         counter!("seeder.probes.failed_total", "reason" => "sanity_cap")
                             .increment(1);
                     }
