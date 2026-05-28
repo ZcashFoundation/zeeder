@@ -56,8 +56,12 @@ impl ProbeMap {
     /// Record a successful probe. Returns `false` if the height was rejected
     /// by the sanity cap.
     pub fn record_success(&self, addr: PeerSocketAddr, height: u32) -> bool {
-        let max_observed = self.max_height();
-        let bootstrap = self.entries.len() < SANITY_BOOTSTRAP_MIN_ENTRIES;
+        // The sanity cap and bootstrap counter must consider *successful*
+        // observations only. Failure stubs (height=0) would otherwise hold
+        // the baseline at 0 and cause every real height to be rejected
+        // until prune_stale clears them.
+        let max_observed = self.successful_max_height();
+        let bootstrap = self.successful_entry_count() < SANITY_BOOTSTRAP_MIN_ENTRIES;
         if !bootstrap && height > max_observed.saturating_add(SANITY_CAP_MAX_DELTA) {
             return false;
         }
@@ -127,12 +131,20 @@ impl ProbeMap {
         self.entries.get(addr).map(|e| *e.value())
     }
 
-    fn max_height(&self) -> u32 {
+    fn successful_max_height(&self) -> u32 {
         self.entries
             .iter()
+            .filter(|kv| kv.value().consecutive_failures == 0)
             .map(|kv| kv.value().height)
             .max()
             .unwrap_or(0)
+    }
+
+    fn successful_entry_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|kv| kv.value().consecutive_failures == 0)
+            .count()
     }
 }
 
@@ -387,6 +399,32 @@ mod tests {
         let accepted = probes.record_success(addr(1), 1_500_000);
         assert!(accepted);
         assert_eq!(probes.get(&addr(1)).map(|e| e.height), Some(1_500_000));
+    }
+
+    #[test]
+    fn failure_stubs_do_not_break_sanity_cap_baseline() {
+        // Regression: when many probes fail before any succeed in a cycle,
+        // failure stubs (height=0) used to dominate max_height(), causing
+        // the first real probe to be rejected by the sanity cap. The fix
+        // is to consider only successful entries in the cap's baseline.
+        let probes = ProbeMap::new();
+        for i in 0..10 {
+            probes.record_failure(addr(i));
+        }
+        // First real probe arrives. Without the fix this returned `false`
+        // because 3_358_315 > 0 + 100. With the fix bootstrap is still
+        // active (no successful entries yet) and it's accepted.
+        let accepted = probes.record_success(addr(100), 3_358_315);
+        assert!(
+            accepted,
+            "real height must not be rejected just because the map contains failure stubs"
+        );
+        // Subsequent honest heights should also be accepted.
+        assert!(probes.record_success(addr(101), 3_358_316));
+        assert!(probes.record_success(addr(102), 3_358_317));
+        assert!(probes.record_success(addr(103), 3_358_318));
+        // A real outlier is still rejected once we have a real baseline.
+        assert!(!probes.record_success(addr(104), 10_000_000));
     }
 
     #[test]
