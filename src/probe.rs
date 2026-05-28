@@ -24,10 +24,6 @@ use crate::{
     tip_filter::{compute_reference_tip, ProbeMap, TipFilterSnapshot, TipSource},
 };
 
-/// Maximum acceptable P25..P75 spread before we treat the network as
-/// partitioned and refuse to publish a reference tip.
-const MAX_TIP_SPREAD_BLOCKS: u32 = 20;
-
 /// Spawn the probe task. Returns the JoinHandle and a watch receiver that the
 /// DNS-serving path uses to read the current [`TipFilterSnapshot`].
 pub fn spawn(
@@ -254,8 +250,7 @@ fn publish_snapshot(
     let samples = probes.fresh_heights(since);
 
     // Compute the probe-derived tip first; the RPC override (if fresh) wins.
-    let computation =
-        compute_reference_tip(&samples, config.min_probe_sample, MAX_TIP_SPREAD_BLOCKS);
+    let computation = compute_reference_tip(&samples, config.min_probe_sample);
 
     let rpc_fresh = rpc_tip.and_then(|s| s.read_fresh());
     let (reference_tip, source) = match (rpc_fresh, computation.reference_tip) {
@@ -270,11 +265,6 @@ fn publish_snapshot(
     set_source_gauge(source);
     if let Some(tip) = reference_tip {
         gauge!("seeder.tip.reference_height").set(tip as f64);
-    }
-    if computation.spread > MAX_TIP_SPREAD_BLOCKS {
-        gauge!("seeder.tip.partition_detected").set(1.0);
-    } else {
-        gauge!("seeder.tip.partition_detected").set(0.0);
     }
 
     // Build the synced-peer set if we have a tip; emit offset histogram per peer.
@@ -307,6 +297,15 @@ fn publish_snapshot(
         spread: computation.spread,
         source,
     };
+    tracing::info!(
+        reference_tip = ?reference_tip,
+        source = ?source,
+        sample_count = computation.sample_count,
+        spread = computation.spread,
+        synced_v4 = synced_v4_count,
+        synced_v6 = synced_v6_count,
+        "tip snapshot published",
+    );
     let _ = tx.send(snapshot);
 }
 

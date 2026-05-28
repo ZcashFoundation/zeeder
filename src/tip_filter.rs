@@ -151,9 +151,8 @@ impl ProbeMap {
 /// Outcome of [`compute_reference_tip`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TipComputation {
-    /// `Some` if a reference tip could be computed and the sample spread was
-    /// within bounds; `None` otherwise (insufficient samples or possible
-    /// chain partition).
+    /// `Some` if at least `min_sample` fresh samples were available; `None`
+    /// otherwise. `spread` is recorded separately for observability.
     pub reference_tip: Option<u32>,
     pub p25: u32,
     pub p75: u32,
@@ -165,13 +164,14 @@ pub struct TipComputation {
 ///
 /// Uses the 75th percentile (nearest-rank) for robustness against unsynced
 /// peers and a small number of dishonest height claims. Returns
-/// `reference_tip = None` if `samples.len() < min_sample` or if the P25..P75
-/// spread exceeds `max_spread` (suggesting a chain partition).
-pub fn compute_reference_tip(
-    samples: &[u32],
-    min_sample: usize,
-    max_spread: u32,
-) -> TipComputation {
+/// `reference_tip = None` only when `samples.len() < min_sample`.
+///
+/// `spread` (P75 − P25) is computed for observability but is **not** used to
+/// gate the published tip: a typical seeder address book is full of
+/// stragglers, so P25 lives far below tip and the resulting spread is large
+/// by design. Real chain-partition detection needs a different statistic
+/// (upper-cluster dispersion) and is out of scope here.
+pub fn compute_reference_tip(samples: &[u32], min_sample: usize) -> TipComputation {
     if samples.len() < min_sample {
         return TipComputation {
             reference_tip: None,
@@ -185,10 +185,9 @@ pub fn compute_reference_tip(
     let p25 = percentile(&sorted, 25);
     let p75 = percentile(&sorted, 75);
     let spread = p75.saturating_sub(p25);
-    let reference_tip = if spread > max_spread { None } else { Some(p75) };
 
     TipComputation {
-        reference_tip,
+        reference_tip: Some(p75),
         p25,
         p75,
         sample_count: sorted.len(),
@@ -286,7 +285,7 @@ mod tests {
 
     #[test]
     fn reference_tip_none_below_min_sample() {
-        let result = compute_reference_tip(&[100, 200, 300], 8, 20);
+        let result = compute_reference_tip(&[100, 200, 300], 8);
         assert_eq!(result.reference_tip, None);
         assert_eq!(result.sample_count, 3);
     }
@@ -294,7 +293,7 @@ mod tests {
     #[test]
     fn reference_tip_equals_value_when_all_identical() {
         let samples = vec![1_500_000_u32; 16];
-        let result = compute_reference_tip(&samples, 8, 20);
+        let result = compute_reference_tip(&samples, 8);
         assert_eq!(result.reference_tip, Some(1_500_000));
         assert_eq!(result.spread, 0);
     }
@@ -304,19 +303,27 @@ mod tests {
         // 99 honest peers at height 1_000_000, 1 malicious at u32::MAX.
         let mut samples = vec![1_000_000_u32; 99];
         samples.push(u32::MAX);
-        let result = compute_reference_tip(&samples, 8, 20);
+        let result = compute_reference_tip(&samples, 8);
         // P75 of (99 × 1_000_000 + 1 × u32::MAX) is still 1_000_000.
         assert_eq!(result.reference_tip, Some(1_000_000));
     }
 
     #[test]
-    fn reference_tip_none_when_spread_too_wide() {
-        // Half the network at height 1000, half at height 2000 → chain partition.
-        let mut samples = vec![1000_u32; 8];
-        samples.extend(vec![2000_u32; 8]);
-        let result = compute_reference_tip(&samples, 8, 20);
-        assert_eq!(result.reference_tip, None, "spread too wide");
-        assert_eq!(result.spread, 1000);
+    fn reference_tip_published_despite_wide_spread() {
+        // Realistic seeder mix: laggards from height ~1k and synced peers near
+        // tip. We must still publish a tip; the spread is informational only.
+        let mut samples = vec![1_000_u32; 8];
+        samples.extend(vec![3_358_326_u32; 8]);
+        let result = compute_reference_tip(&samples, 8);
+        assert_eq!(
+            result.reference_tip,
+            Some(3_358_326),
+            "P75 sits in upper cluster"
+        );
+        assert!(
+            result.spread > 1_000_000,
+            "spread reported for observability"
+        );
     }
 
     // ---------- classify_peer ----------
@@ -482,10 +489,10 @@ mod tests {
             base_samples in prop::collection::vec(0u32..1_000_000, 8..50),
             extra in 0u32..1_000_000_000,
         ) {
-            let base_result = compute_reference_tip(&base_samples, 8, u32::MAX);
+            let base_result = compute_reference_tip(&base_samples, 8);
             let mut augmented = base_samples.clone();
             augmented.push(extra);
-            let aug_result = compute_reference_tip(&augmented, 8, u32::MAX);
+            let aug_result = compute_reference_tip(&augmented, 8);
             if let (Some(b), Some(a)) = (base_result.reference_tip, aug_result.reference_tip) {
                 if extra >= b {
                     prop_assert!(a >= b, "P75 must not decrease when adding a larger sample");
