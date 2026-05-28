@@ -87,6 +87,32 @@ fn test_rate_limit_default() {
 }
 
 #[test]
+fn test_tip_filter_disabled_by_default() {
+    let config = SeederConfig::default();
+    assert!(config.tip_filter.is_none());
+}
+
+#[test]
+fn test_tip_filter_enabled_via_env() {
+    with_env_lock(|| {
+        env::set_var("ZEBRA_SEEDER__TIP_FILTER__PROBE_CONCURRENCY", "8");
+        env::set_var("ZEBRA_SEEDER__TIP_FILTER__TIP_TOLERANCE_BLOCKS", "12");
+
+        let config = SeederConfig::load_with_env(None).expect("should load");
+
+        let tip = config.tip_filter.expect("tip_filter should be Some");
+        assert_eq!(tip.probe_concurrency, 8);
+        assert_eq!(tip.tip_tolerance_blocks, 12);
+        // Untouched fields keep their defaults
+        assert_eq!(tip.min_synced_peers, 16);
+        assert_eq!(tip.min_probe_sample, 8);
+
+        env::remove_var("ZEBRA_SEEDER__TIP_FILTER__PROBE_CONCURRENCY");
+        env::remove_var("ZEBRA_SEEDER__TIP_FILTER__TIP_TOLERANCE_BLOCKS");
+    });
+}
+
+#[test]
 fn test_rate_limit_from_env() {
     with_env_lock(|| {
         env::set_var("ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND", "50");

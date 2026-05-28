@@ -31,6 +31,9 @@ hickory-proto = "0.25.2"
 metrics = "0.24.3"
 metrics-exporter-prometheus = "0.18.1"
 governor = "0.10"
+dashmap = "6"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde_json = "1.0"
 
 [dev-dependencies]
 tokio-test = "0.4.5"

@@ -36,6 +36,14 @@ pub struct SeederConfig {
     ///
     /// If `None`, rate limiting is disabled (NOT recommended for production).
     pub rate_limit: Option<RateLimitConfig>,
+
+    /// Chain-tip-aware peer filtering.
+    ///
+    /// If `None`, the seeder serves all reachable peers regardless of sync
+    /// state (the historical behavior). If `Some`, the seeder probes peers
+    /// for their reported chain tip and prefers serving those that are at or
+    /// near the network tip.
+    pub tip_filter: Option<TipFilterConfig>,
 }
 
 /// Configuration for Prometheus metrics.
@@ -80,6 +88,102 @@ impl Default for RateLimitConfig {
     }
 }
 
+/// Configuration for chain-tip-aware peer filtering.
+///
+/// When enabled, the seeder periodically probes peers it knows about to learn
+/// their reported chain tip via the Zcash `version` handshake. The reference
+/// tip is computed as the 75th percentile of fresh probe results (or sourced
+/// from an optional trusted RPC endpoint). DNS responses then prefer peers
+/// whose reported height is within `tip_tolerance_blocks` of the reference
+/// tip. If too few synced peers are known, the seeder falls back to its
+/// unfiltered behavior to avoid locking new nodes out of the network.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TipFilterConfig {
+    /// Maximum concurrent peer probes.
+    pub probe_concurrency: usize,
+    /// Outer probe scheduler tick interval, in seconds.
+    pub probe_interval_secs: u64,
+    /// Per-probe total timeout (TCP connect + handshake), in seconds.
+    pub probe_timeout_secs: u64,
+    /// Probe entries older than this are considered stale and re-probed.
+    pub probe_stale_after_secs: u64,
+    /// Maximum acceptable block-height delta from the reference tip for a
+    /// peer to be classified as "synced".
+    pub tip_tolerance_blocks: u32,
+    /// Minimum count of synced peers (per address family) required before
+    /// the hard filter engages. Below this threshold the seeder serves the
+    /// unfiltered set instead.
+    pub min_synced_peers: usize,
+    /// Minimum count of fresh probe samples required before a reference
+    /// tip is computed.
+    pub min_probe_sample: usize,
+
+    /// Optional trusted JSON-RPC endpoint to source the reference tip from
+    /// instead of (or in addition to) probe-derived heights.
+    pub rpc_override: Option<RpcOverrideConfig>,
+}
+
+impl Default for TipFilterConfig {
+    fn default() -> Self {
+        Self {
+            probe_concurrency: 32,
+            probe_interval_secs: 60,
+            probe_timeout_secs: 10,
+            probe_stale_after_secs: 600,
+            tip_tolerance_blocks: 8,
+            min_synced_peers: 16,
+            min_probe_sample: 8,
+            rpc_override: None,
+        }
+    }
+}
+
+impl TipFilterConfig {
+    /// Reject footgun configurations at load time.
+    pub fn validate(&self) -> Result<()> {
+        use color_eyre::eyre::eyre;
+        if self.probe_concurrency == 0 {
+            return Err(eyre!("tip_filter.probe_concurrency must be >= 1"));
+        }
+        if self.min_synced_peers == 0 {
+            return Err(eyre!("tip_filter.min_synced_peers must be >= 1"));
+        }
+        if self.min_probe_sample == 0 {
+            return Err(eyre!("tip_filter.min_probe_sample must be >= 1"));
+        }
+        if self.probe_timeout_secs == 0 {
+            return Err(eyre!("tip_filter.probe_timeout_secs must be >= 1"));
+        }
+        if self.probe_interval_secs == 0 {
+            return Err(eyre!("tip_filter.probe_interval_secs must be >= 1"));
+        }
+        Ok(())
+    }
+}
+
+/// Configuration for the optional trusted-RPC tip override.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct RpcOverrideConfig {
+    /// JSON-RPC endpoint URL (e.g., a local zebrad or zcashd).
+    pub url: String,
+    /// Poll interval, in seconds.
+    pub poll_interval_secs: u64,
+    /// Optional HTTP basic-auth credentials (zcashd uses these).
+    pub basic_auth: Option<(String, String)>,
+}
+
+impl Default for RpcOverrideConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            poll_interval_secs: 30,
+            basic_auth: None,
+        }
+    }
+}
+
 impl Default for SeederConfig {
     fn default() -> Self {
         Self {
@@ -91,6 +195,7 @@ impl Default for SeederConfig {
             dns_ttl: 600, // 10 minutes
             metrics: None,
             rate_limit: Some(RateLimitConfig::default()),
+            tip_filter: None,
         }
     }
 }
@@ -118,6 +223,10 @@ impl SeederConfig {
 
         let config = builder.build()?;
         let seeder_config: SeederConfig = config.try_deserialize()?;
+
+        if let Some(tip_cfg) = &seeder_config.tip_filter {
+            tip_cfg.validate()?;
+        }
 
         Ok(seeder_config)
     }

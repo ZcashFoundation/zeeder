@@ -21,7 +21,8 @@ use tokio::{
 use tracing::{info_span, Instrument};
 use zebra_network::PeerSocketAddr;
 
-use crate::config::SeederConfig;
+use crate::config::{SeederConfig, TipFilterConfig};
+use crate::tip_filter::TipFilterSnapshot;
 
 type RateLimiter = GovernorLimiter<IpAddr, DashMapStateStore<IpAddr>, clock::DefaultClock>;
 
@@ -78,7 +79,7 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
         config.network.clone(),
         inbound_service,
         zebra_chain::chain_tip::NoChainTip,
-        user_agent,
+        user_agent.clone(),
     )
     .await;
 
@@ -140,9 +141,39 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
 
     tracing::info!("Initializing DNS server on {}", config.dns_listen_addr);
 
+    // Optional tip-filter: spawn probe task (and optional RPC poller) and
+    // hand the resulting snapshot receiver to the cache updater.
+    let (tip_filter_rx, tip_filter_cfg) = if let Some(cfg) = config.tip_filter.clone() {
+        let rpc_state = cfg.rpc_override.as_ref().map(|rpc_cfg| {
+            let state = crate::rpc_tip::RpcTipState::new();
+            crate::rpc_tip::spawn(rpc_cfg.clone(), state.clone());
+            state
+        });
+        let (rx, _handle) = crate::probe::spawn(
+            cfg.clone(),
+            config.network.network.clone(),
+            user_agent.clone(),
+            address_book.clone(),
+            rpc_state,
+        );
+        tracing::info!(
+            probe_concurrency = cfg.probe_concurrency,
+            probe_interval_secs = cfg.probe_interval_secs,
+            tip_tolerance_blocks = cfg.tip_tolerance_blocks,
+            "Chain-tip-aware peer filter enabled",
+        );
+        (Some(rx), Some(cfg))
+    } else {
+        (None, None)
+    };
+
     // Spawn address cache updater - provides lock-free reads for DNS queries
-    let latest_addresses =
-        spawn_addresses_cache_updater(address_book.clone(), config.network.network.default_port());
+    let latest_addresses = spawn_addresses_cache_updater(
+        address_book.clone(),
+        config.network.network.default_port(),
+        tip_filter_rx,
+        tip_filter_cfg,
+    );
 
     let authority = SeederAuthority::new(
         latest_addresses,
@@ -247,6 +278,8 @@ fn log_crawler_status(book: &zebra_network::AddressBook, default_port: u16) {
 fn spawn_addresses_cache_updater(
     address_book: Arc<std::sync::Mutex<zebra_network::AddressBook>>,
     default_port: u16,
+    tip_filter_rx: Option<watch::Receiver<TipFilterSnapshot>>,
+    tip_filter_cfg: Option<TipFilterConfig>,
 ) -> watch::Receiver<AddressRecords> {
     let (latest_addresses_sender, latest_addresses) = watch::channel(AddressRecords::default());
 
@@ -299,6 +332,41 @@ fn spawn_addresses_cache_updater(
                 .filter(|meta| meta.addr().ip().is_ipv6())
                 .take(PEER_SELECTION_POOL_SIZE)
                 .collect();
+
+            // Apply the chain-tip filter if enabled. We use a hard filter when
+            // enough synced peers are known; otherwise we fall back to the
+            // unfiltered pool so a stale or empty probe map cannot black-hole
+            // new node onboarding.
+            if let (Some(rx), Some(cfg)) = (tip_filter_rx.as_ref(), tip_filter_cfg.as_ref()) {
+                let snapshot = rx.borrow();
+                if snapshot.reference_tip.is_some() {
+                    let synced_v4: Vec<_> = ipv4
+                        .iter()
+                        .copied()
+                        .filter(|m| snapshot.synced_peers.contains(&m.addr()))
+                        .collect();
+                    if synced_v4.len() >= cfg.min_synced_peers {
+                        ipv4 = synced_v4;
+                        gauge!("seeder.tip.fallback_engaged", "addr_family" => "v4").set(0.0);
+                    } else {
+                        gauge!("seeder.tip.fallback_engaged", "addr_family" => "v4").set(1.0);
+                    }
+                    let synced_v6: Vec<_> = ipv6
+                        .iter()
+                        .copied()
+                        .filter(|m| snapshot.synced_peers.contains(&m.addr()))
+                        .collect();
+                    if synced_v6.len() >= cfg.min_synced_peers {
+                        ipv6 = synced_v6;
+                        gauge!("seeder.tip.fallback_engaged", "addr_family" => "v6").set(0.0);
+                    } else {
+                        gauge!("seeder.tip.fallback_engaged", "addr_family" => "v6").set(1.0);
+                    }
+                } else {
+                    gauge!("seeder.tip.fallback_engaged", "addr_family" => "v4").set(1.0);
+                    gauge!("seeder.tip.fallback_engaged", "addr_family" => "v6").set(1.0);
+                }
+            }
 
             // Shuffle and take the configured maximum
             ipv4.shuffle(&mut rng());
