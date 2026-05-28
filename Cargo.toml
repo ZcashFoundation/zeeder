@@ -21,8 +21,8 @@ color-eyre = "0.6"
 tower = { version = "0.5", features = ["util"] }
 # Zebra dependencies - assuming latest published versions or git if needed.
 # For scaffolding, we use version wildcards or recent versions to ensure compilation starts.
-zebra-network = "2.0.2"
-zebra-chain = "3.1.0"
+zebra-network = "4.0.0"
+zebra-chain = "5.0.0"
 dotenvy = "0.15.7"
 rand = "0.10.1"
 async-trait = "0.1.89"

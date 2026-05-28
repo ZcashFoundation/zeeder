@@ -368,6 +368,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09dc0086e469182132244e9b8d313a0742e1132da43a08c24b9dd3c18e0faf3a"
 dependencies = [
+ "serde",
  "thiserror 2.0.17",
 ]
 
@@ -5437,9 +5438,9 @@ dependencies = [
 
 [[package]]
 name = "zebra-chain"
-version = "3.1.0"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b4aa7e85afd7bdf159e8c9a973d32bfc410be42ce82c2396690ae1208933bb8"
+checksum = "a15c1b579eb4d25214fa15839a74f4b9599806bc8addb910cfbec50dd59fb97f"
 dependencies = [
  "bech32",
  "bitflags",
@@ -5447,6 +5448,7 @@ dependencies = [
  "bitvec",
  "blake2b_simd",
  "blake2s_simd",
+ "bounded-vec",
  "bs58",
  "byteorder",
  "chrono",
@@ -5497,9 +5499,9 @@ dependencies = [
 
 [[package]]
 name = "zebra-network"
-version = "2.0.2"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3edeb353c33962fb5f9012745ddb44d33ee90acb8c9410669bf54d72488b8cf"
+checksum = "90569b97fa9ce8d09f4b8e9dfe97c36fb673aa5869191d17abf69e880034a8e9"
 dependencies = [
  "bitflags",
  "byteorder",
