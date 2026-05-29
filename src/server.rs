@@ -3,13 +3,13 @@ use std::{net::IpAddr, num::NonZeroU32, sync::Arc, time::Duration};
 use color_eyre::eyre::{Context, Result};
 use governor::{clock, state::keyed::DashMapStateStore, Quota, RateLimiter as GovernorLimiter};
 use hickory_proto::{
-    op::{Header, ResponseCode},
+    op::{Header, HeaderCounts, Metadata, ResponseCode},
     rr::{RData, Record, RecordType},
 };
 use hickory_server::{
-    authority::MessageResponseBuilder,
-    server::{RequestHandler, ResponseHandler, ResponseInfo},
-    ServerFuture,
+    net::runtime::Time,
+    server::{RequestHandler, ResponseHandler, ResponseInfo, Server},
+    zone_handler::MessageResponseBuilder,
 };
 use metrics::{counter, gauge, histogram};
 use rand::{rng, seq::SliceRandom};
@@ -150,7 +150,7 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
         config.dns_ttl,
         rate_limiter,
     );
-    let mut server = ServerFuture::new(authority);
+    let mut server = Server::new(authority);
 
     // Register UDP and TCP listeners
     let udp_socket = UdpSocket::bind(config.dns_listen_addr)
@@ -161,12 +161,12 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
     let tcp_listener = TcpListener::bind(config.dns_listen_addr)
         .await
         .wrap_err("failed to bind TCP listener")?;
-    server.register_listener(tcp_listener, std::time::Duration::from_secs(5));
+    server.register_listener(tcp_listener, std::time::Duration::from_secs(5), 32);
 
     tracing::info!("Seeder running. Press Ctrl+C to exit.");
 
     // Run the server in the background, or block here?
-    // Usually ServerFuture needs to be polled. `block_on` runs it.
+    // Usually the Server needs to be polled. `block_on` runs it.
     // We want to run it concurrently with ctrl_c.
 
     tokio::select! {
@@ -189,7 +189,7 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
             // Abort the metrics logger task
             metrics_handle.abort();
 
-            // Note: ServerFuture doesn't have a graceful shutdown method,
+            // Note: Server doesn't have a graceful shutdown method,
             // so we rely on the Drop implementation to clean up sockets
 
             // Brief delay to allow:
@@ -346,7 +346,7 @@ impl SeederAuthority {
 
 #[async_trait::async_trait]
 impl RequestHandler for SeederAuthority {
-    async fn handle_request<R: ResponseHandler>(
+    async fn handle_request<R: ResponseHandler, T: Time>(
         &self,
         request: &hickory_server::server::Request,
         response_handle: R,
@@ -365,8 +365,8 @@ impl SeederAuthority {
         mut response_handle: R,
     ) -> ResponseInfo {
         let builder = MessageResponseBuilder::from_message_request(request);
-        let mut header = Header::response_from_request(request.header());
-        header.set_authoritative(true); // WE ARE THE AUTHORITY!
+        let mut metadata = Metadata::response_from_request(&request.metadata);
+        metadata.authoritative = true; // WE ARE THE AUTHORITY!
 
         // Rate limiting check
         if let Some(ref limiter) = self.rate_limiter {
@@ -377,14 +377,17 @@ impl SeederAuthority {
                 counter!("seeder.dns.rate_limited_total").increment(1);
 
                 // Drop the request silently (no response to prevent amplification)
-                return ResponseInfo::from(header);
+                return ResponseInfo::from(Header {
+                    metadata,
+                    counts: HeaderCounts::default(),
+                });
             }
         }
 
         // Checking one query at a time standard
         // If multiple queries, usually we answer the first or all?
         // Standard DNS usually has 1 question.
-        if let Some(query) = request.queries().first() {
+        if let Some(query) = request.queries.queries().first() {
             let name = query.name();
             let record_type = query.query_type();
 
@@ -395,12 +398,17 @@ impl SeederAuthority {
 
             if name_norm != seed_norm && !name_norm.ends_with(&format!(".{}", seed_norm)) {
                 // Return REFUSED
-                header.set_response_code(ResponseCode::Refused);
-                let response = builder.build(header, &[], &[], &[], &[]);
+                metadata.response_code = ResponseCode::Refused;
+                let response = builder.build(metadata, &[], &[], &[], &[]);
                 return response_handle
                     .send_response(response)
                     .await
-                    .unwrap_or_else(|_| ResponseInfo::from(header));
+                    .unwrap_or_else(|_| {
+                        ResponseInfo::from(Header {
+                            metadata,
+                            counts: HeaderCounts::default(),
+                        })
+                    });
             }
 
             let mut records = Vec::new();
@@ -436,7 +444,7 @@ impl SeederAuthority {
                     counter!("seeder.dns.queries_total", &[("record_type", type_label)])
                         .increment(1);
 
-                    let response = builder.build(header, records.iter(), &[], &[], &[]);
+                    let response = builder.build(metadata, records.iter(), &[], &[], &[]);
                     return response_handle
                         .send_response(response)
                         .await
@@ -445,7 +453,10 @@ impl SeederAuthority {
                             counter!("seeder.dns.errors_total").increment(1);
                         })
                         .unwrap_or_else(|_| {
-                            ResponseInfo::from(header) // fallback
+                            ResponseInfo::from(Header {
+                                metadata,
+                                counts: HeaderCounts::default(),
+                            }) // fallback
                         });
                 }
                 _ => {
@@ -458,11 +469,16 @@ impl SeederAuthority {
 
         // Default response (SERVFAIL or just empty user defined)
         // If we got here, we didn't return above.
-        let response = builder.build(header, &[], &[], &[], &[]);
+        let response = builder.build(metadata, &[], &[], &[], &[]);
         response_handle
             .send_response(response)
             .await
-            .unwrap_or_else(|_| ResponseInfo::from(header))
+            .unwrap_or_else(|_| {
+                ResponseInfo::from(Header {
+                    metadata,
+                    counts: HeaderCounts::default(),
+                })
+            })
     }
 }
 
@@ -599,8 +615,10 @@ mod tests {
     // DNS Integration Tests
     // These require async and test the full DNS server stack
 
-    use hickory_proto::xfer::Protocol;
-    use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
+    use hickory_resolver::config::{
+        ConnectionConfig, NameServerConfig, ResolverConfig, ResolverOpts,
+    };
+    use hickory_resolver::net::runtime::TokioRuntimeProvider;
     use hickory_resolver::TokioResolver;
     use std::net::SocketAddr;
     use std::time::Duration;
@@ -616,9 +634,9 @@ mod tests {
 
         let tcp_listener = TokioTcpListener::bind(server_addr).await.unwrap();
 
-        let mut server = ServerFuture::new(authority);
+        let mut server = Server::new(authority);
         server.register_socket(udp_socket);
-        server.register_listener(tcp_listener, Duration::from_secs(5));
+        server.register_listener(tcp_listener, Duration::from_secs(5), 32);
 
         let handle = tokio::spawn(async move {
             let _ = server.block_until_done().await;
@@ -632,18 +650,23 @@ mod tests {
 
     /// Helper to create a resolver pointing to our test server
     fn create_test_resolver(server_addr: SocketAddr) -> TokioResolver {
-        use hickory_resolver::name_server::TokioConnectionProvider;
-
-        let mut config = ResolverConfig::new();
-        config.add_name_server(NameServerConfig::new(server_addr, Protocol::Udp));
+        let mut config = ResolverConfig::from_parts(None, vec![], vec![]);
+        let mut connection = ConnectionConfig::udp();
+        connection.port = server_addr.port();
+        config.add_name_server(NameServerConfig::new(
+            server_addr.ip(),
+            true,
+            vec![connection],
+        ));
 
         let mut opts = ResolverOpts::default();
         opts.timeout = Duration::from_secs(2);
         opts.attempts = 1;
 
-        TokioResolver::builder_with_config(config, TokioConnectionProvider::default())
+        TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
             .with_options(opts)
             .build()
+            .expect("test resolver should build")
     }
 
     /// Helper to create a test watch receiver with empty addresses for testing
@@ -680,8 +703,8 @@ mod tests {
         match result {
             Ok(response) => {
                 // Valid response - check all IPs are IPv4
-                for record in response.iter() {
-                    if let Some(ip) = record.ip_addr() {
+                for record in response.answers().iter() {
+                    if let Some(ip) = record.data.ip_addr() {
                         assert!(ip.is_ipv4(), "A record should return IPv4");
                     }
                 }
@@ -787,8 +810,8 @@ mod tests {
         // Should get a valid response (possibly empty for IPv6)
         match result {
             Ok(response) => {
-                for record in response.iter() {
-                    if let Some(ip) = record.ip_addr() {
+                for record in response.answers().iter() {
+                    if let Some(ip) = record.data.ip_addr() {
                         assert!(ip.is_ipv6(), "AAAA record should return IPv6");
                     }
                 }
