@@ -47,7 +47,7 @@ pub fn spawn(
                         tracing::error!(
                             "address book mutex poisoned during cache update, recovering"
                         );
-                        counter!("seeder.mutex_poisoning_total", "location" => "cache_updater")
+                        counter!("seeder_mutex_poisoning_total", "location" => "cache_updater")
                             .increment(1);
                         poisoned.into_inner()
                     }
@@ -90,11 +90,11 @@ fn servable_records(book: &AddressBook, default_port: u16) -> AddressRecords {
         }
     }
 
-    gauge!("seeder.peers.total").set(book.len() as f64);
-    gauge!("seeder.peers.eligible", "addr_family" => "v4").set(ipv4.len() as f64);
-    gauge!("seeder.peers.eligible", "addr_family" => "v6").set(ipv6.len() as f64);
+    gauge!("seeder_peers_known").set(book.len() as f64);
+    gauge!("seeder_peers_servable", "addr_family" => "v4").set(ipv4.len() as f64);
+    gauge!("seeder_peers_servable", "addr_family" => "v6").set(ipv6.len() as f64);
     for reason in IneligibleReason::ALL {
-        gauge!("seeder.peers.ineligible", "reason" => reason.label())
+        gauge!("seeder_peers_ineligible", "reason" => reason.label())
             .set(ineligible.get(&reason).copied().unwrap_or(0) as f64);
     }
 

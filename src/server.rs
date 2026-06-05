@@ -10,7 +10,7 @@ use hickory_server::{
     server::{RequestHandler, ResponseHandler, ResponseInfo, Server},
     zone_handler::MessageResponseBuilder,
 };
-use metrics::{counter, histogram};
+use metrics::{counter, gauge, histogram};
 use tokio::{
     net::{TcpListener, UdpSocket},
     sync::watch,
@@ -55,14 +55,22 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
     // Pin a chain tip at the current network upgrade so zebra-network's
     // handshake rejects peers advertising an outdated protocol version.
     let tip = chain_tip::SeederChainTip::current_upgrade(&config.network.network);
+    let min_protocol_version = zebra_network::Version::min_remote_for_height(
+        &config.network.network,
+        tip.best_tip_height(),
+    );
     tracing::info!(
         network = %config.network.network,
-        min_protocol_version = %zebra_network::Version::min_remote_for_height(
-            &config.network.network,
-            tip.best_tip_height(),
-        ),
+        %min_protocol_version,
         "enforcing peer protocol-version floor"
     );
+    gauge!("seeder_min_protocol_version").set(min_protocol_version.0 as f64);
+    gauge!(
+        "seeder_build_info",
+        "version" => env!("CARGO_PKG_VERSION"),
+        "network" => config.network.network.to_string(),
+    )
+    .set(1.0);
 
     // Initialize zebra-network
     let (peer_set, address_book, _peer_sender) =
@@ -91,7 +99,7 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
                     tracing::error!(
                         "Address book mutex poisoned during metrics logging, recovering"
                     );
-                    counter!("seeder.mutex_poisoning_total", "location" => "metrics_logger")
+                    counter!("seeder_mutex_poisoning_total", "location" => "metrics_logger")
                         .increment(1);
                     poisoned.into_inner()
                 }
@@ -248,7 +256,7 @@ impl SeederAuthority {
 
             if !limiter.check(client_ip) {
                 tracing::warn!("Rate limit exceeded for {}", client_ip);
-                counter!("seeder.dns.rate_limited_total").increment(1);
+                counter!("seeder_dns_rate_limited_total").increment(1);
 
                 // Drop the request silently (no response to prevent amplification)
                 return ResponseInfo::from(Header {
@@ -295,7 +303,7 @@ impl SeederAuthority {
                 _ => Vec::new(),
             };
 
-            histogram!("seeder.dns.response_peers").record(matched_peers.len() as f64);
+            histogram!("seeder_dns_response_peers").record(matched_peers.len() as f64);
 
             for addr in matched_peers {
                 let rdata = match addr.ip() {
@@ -315,7 +323,7 @@ impl SeederAuthority {
                         RecordType::AAAA => "AAAA",
                         _ => "other",
                     };
-                    counter!("seeder.dns.queries_total", &[("record_type", type_label)])
+                    counter!("seeder_dns_queries_total", &[("record_type", type_label)])
                         .increment(1);
 
                     let response = builder.build(metadata, records.iter(), &[], &[], &[]);
@@ -324,7 +332,7 @@ impl SeederAuthority {
                         .await
                         .inspect_err(|e| {
                             tracing::warn!("Failed to send DNS response: {}", e);
-                            counter!("seeder.dns.errors_total").increment(1);
+                            counter!("seeder_dns_errors_total").increment(1);
                         })
                         .unwrap_or_else(|_| {
                             ResponseInfo::from(Header {

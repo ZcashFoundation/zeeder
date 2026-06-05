@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use color_eyre::eyre::{Context, Result};
 use std::path::PathBuf;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Zcash DNS Seeder", long_about = None)]
@@ -11,10 +11,6 @@ pub struct SeederApp {
     /// Path to configuration file
     #[arg(short, long, global = true)]
     pub config: Option<PathBuf>,
-
-    /// Filter for tracing events (e.g. "info", "debug")
-    #[arg(short, long, default_value = "info", global = true)]
-    pub verbose: String,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -30,10 +26,12 @@ impl SeederApp {
     pub async fn run() -> Result<()> {
         let app = SeederApp::parse();
 
-        // Initialize tracing
+        // Log verbosity is controlled by RUST_LOG (e.g. `RUST_LOG=debug`, or
+        // `RUST_LOG=zebra_seeder=debug,info`), defaulting to `info`. Logs go to
+        // stderr so stdout stays clean for piping.
         tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::new(&app.verbose))
-            .with(tracing_subscriber::fmt::layer())
+            .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
             .init();
 
         match app.command {
@@ -85,16 +83,9 @@ mod tests {
     }
 
     #[test]
-    fn test_verbose_option_default() {
-        let cmd = SeederApp::command();
-        let verbose_arg = cmd.get_arguments().find(|a| a.get_id() == "verbose");
-        assert!(verbose_arg.is_some(), "Should have --verbose option");
-    }
-
-    #[test]
     fn test_parse_start_command() {
         // Test parsing the start command
-        let result = SeederApp::try_parse_from(&["zebra-seeder", "start"]);
+        let result = SeederApp::try_parse_from(["zebra-seeder", "start"]);
         assert!(result.is_ok(), "Should parse 'start' command successfully");
 
         if let Ok(app) = result {
@@ -104,7 +95,7 @@ mod tests {
 
     #[test]
     fn test_parse_with_config_path() {
-        let result = SeederApp::try_parse_from(&[
+        let result = SeederApp::try_parse_from([
             "zebra-seeder",
             "--config",
             "/path/to/config.toml",
@@ -118,16 +109,6 @@ mod tests {
                 app.config.unwrap().to_str().unwrap(),
                 "/path/to/config.toml"
             );
-        }
-    }
-
-    #[test]
-    fn test_parse_with_verbose() {
-        let result = SeederApp::try_parse_from(&["zebra-seeder", "--verbose", "debug", "start"]);
-        assert!(result.is_ok(), "Should parse with --verbose option");
-
-        if let Ok(app) = result {
-            assert_eq!(app.verbose, "debug");
         }
     }
 }
