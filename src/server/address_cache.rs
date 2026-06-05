@@ -106,3 +106,75 @@ fn servable_records(book: &AddressBook, default_port: u16) -> AddressRecords {
 
     AddressRecords { ipv4, ipv6 }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::IpAddr;
+
+    use chrono::Utc;
+    use tracing::Span;
+    use zebra_chain::{parameters::Network, serialization::DateTime32};
+    use zebra_network::types::{MetaAddr, PeerServices};
+
+    use super::*;
+
+    fn empty_book() -> AddressBook {
+        AddressBook::new(
+            "127.0.0.1:8233".parse().unwrap(),
+            &Network::Mainnet,
+            100,
+            Span::none(),
+        )
+    }
+
+    fn peer(addr: &str) -> zebra_network::PeerSocketAddr {
+        addr.parse().expect("valid peer socket addr")
+    }
+
+    /// Gossiped, never-handshaked peers are in the book but must never be served.
+    #[test]
+    fn gossiped_peers_are_not_servable() {
+        let mut book = empty_book();
+        let last_seen: DateTime32 = Utc::now().try_into().expect("valid timestamp");
+        let change = MetaAddr::new_gossiped_meta_addr(
+            peer("1.2.3.4:8233"),
+            PeerServices::NODE_NETWORK,
+            last_seen,
+        )
+        .new_gossiped_change()
+        .expect("gossiped change");
+        book.update(change);
+        assert_eq!(book.len(), 1, "the gossiped peer should be in the book");
+
+        let records = servable_records(&book, Network::Mainnet.default_port());
+        assert!(
+            records.ipv4.is_empty() && records.ipv6.is_empty(),
+            "gossiped (never-handshaked) peers must not be served"
+        );
+    }
+
+    /// A peer zebra-network recently handshaked is servable.
+    #[test]
+    fn recently_responded_peer_is_servable() {
+        let mut book = empty_book();
+        book.update(MetaAddr::new_responded(peer("1.2.3.4:8233"), None));
+
+        let records = servable_records(&book, Network::Mainnet.default_port());
+        let served: Vec<IpAddr> = records.ipv4.iter().map(|p| p.ip()).collect();
+        assert_eq!(served, vec!["1.2.3.4".parse::<IpAddr>().unwrap()]);
+    }
+
+    /// A handshaked peer on a non-default port cannot be reached via DNS (which
+    /// carries no port), so it is not servable.
+    #[test]
+    fn responded_peer_on_wrong_port_is_not_servable() {
+        let mut book = empty_book();
+        book.update(MetaAddr::new_responded(peer("1.2.3.4:1234"), None));
+
+        let records = servable_records(&book, Network::Mainnet.default_port());
+        assert!(
+            records.ipv4.is_empty(),
+            "peers on a non-default port must not be served"
+        );
+    }
+}

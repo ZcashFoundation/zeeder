@@ -695,6 +695,64 @@ mod tests {
         handle.abort();
     }
 
+    /// End-to-end: a populated servable cache is served as exact A/AAAA records
+    /// over the real DNS stack, split correctly by address family.
+    #[tokio::test]
+    async fn serves_cached_servable_addresses() {
+        use std::collections::HashSet;
+
+        use zebra_network::PeerSocketAddr;
+
+        let records = AddressRecords {
+            ipv4: vec![
+                "1.2.3.4:8233".parse::<PeerSocketAddr>().unwrap(),
+                "5.6.7.8:8233".parse::<PeerSocketAddr>().unwrap(),
+            ],
+            ipv6: vec!["[2001:db8::1]:8233".parse::<PeerSocketAddr>().unwrap()],
+        };
+        let (sender, receiver) = watch::channel(records);
+        std::mem::forget(sender);
+
+        let authority =
+            SeederAuthority::new(receiver, "mainnet.seeder.test".to_string(), 600, None);
+        let (server_addr, handle) = create_test_dns_server(authority).await;
+        let resolver = create_test_resolver(server_addr);
+
+        let a = resolver
+            .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::A)
+            .await
+            .expect("A lookup should succeed");
+        let got_v4: HashSet<IpAddr> = a
+            .answers()
+            .iter()
+            .filter_map(|r| r.data.ip_addr())
+            .collect();
+        let want_v4: HashSet<IpAddr> = ["1.2.3.4".parse().unwrap(), "5.6.7.8".parse().unwrap()]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            got_v4, want_v4,
+            "A query should return exactly the cached IPv4 peers"
+        );
+
+        let aaaa = resolver
+            .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::AAAA)
+            .await
+            .expect("AAAA lookup should succeed");
+        let got_v6: HashSet<IpAddr> = aaaa
+            .answers()
+            .iter()
+            .filter_map(|r| r.data.ip_addr())
+            .collect();
+        let want_v6: HashSet<IpAddr> = ["2001:db8::1".parse().unwrap()].into_iter().collect();
+        assert_eq!(
+            got_v6, want_v6,
+            "AAAA query should return exactly the cached IPv6 peers"
+        );
+
+        handle.abort();
+    }
+
     // Property-Based Tests
     // These use proptest to verify filtering logic with random inputs
 
