@@ -17,6 +17,7 @@ use tokio::{
     time,
 };
 use tracing::{info_span, Instrument};
+use zebra_chain::chain_tip::ChainTip;
 
 use crate::{
     config::SeederConfig,
@@ -27,6 +28,7 @@ use crate::{
 };
 
 mod address_cache;
+mod chain_tip;
 mod eligibility;
 mod rate_limiter;
 
@@ -50,14 +52,21 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
 
     tracing::info!("User-Agent: {}", user_agent);
 
+    // Pin a chain tip at the current network upgrade so zebra-network's
+    // handshake rejects peers advertising an outdated protocol version.
+    let tip = chain_tip::SeederChainTip::current_upgrade(&config.network.network);
+    tracing::info!(
+        network = %config.network.network,
+        min_protocol_version = %zebra_network::Version::min_remote_for_height(
+            &config.network.network,
+            tip.best_tip_height(),
+        ),
+        "enforcing peer protocol-version floor"
+    );
+
     // Initialize zebra-network
-    let (peer_set, address_book, _peer_sender) = zebra_network::init(
-        config.network.clone(),
-        inbound_service,
-        zebra_chain::chain_tip::NoChainTip,
-        user_agent,
-    )
-    .await;
+    let (peer_set, address_book, _peer_sender) =
+        zebra_network::init(config.network.clone(), inbound_service, tip, user_agent).await;
 
     // Metrics/status logging interval (zebra-network handles actual crawling internally)
     const METRICS_LOG_INTERVAL: Duration = Duration::from_secs(600); // 10 minutes
