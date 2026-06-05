@@ -333,9 +333,9 @@ fn test_my_param_default() {
 ```rust
 use metrics::{counter, gauge, histogram};
 
-counter!("seeder.my_metric_total").increment(1);
-gauge!("seeder.my_gauge").set(42.0);
-histogram!("seeder.my_histogram").record(10.5);
+counter!("seeder_my_metric_total").increment(1);
+gauge!("seeder_my_gauge").set(42.0);
+histogram!("seeder_my_histogram").record(10.5);
 ```
 
 2. Document in `docs/operations.md` metrics table

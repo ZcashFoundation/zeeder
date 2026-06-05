@@ -99,13 +99,16 @@ Once enabled, metrics are available at `http://localhost:9999/metrics`.
 ### Key Metrics for Operators
 Monitor these metrics to ensure the seeder is healthy and serving useful data:
 
--   **`seeder.peers.eligible`** (Gauge, labels: `v4`, `v6`): **Critical**. The number of peers that are currently reachable, routable, and listening on the default zcash port. If this drops to 0, the seeder is effectively returning empty or bad lists.
--   **`seeder.dns.queries_total`** (Counter, labels: `A`, `AAAA`): Traffic volume.
--   **`seeder.dns.errors_total`** (Counter): Should be near zero. Spikes indicate socket handling issues.
--   **`seeder.dns.response_peers`** (Histogram): Tracks how many peers are returned per query. A healthy seeder should consistently return near 25 peers. A shift to lower numbers indicates the address book is running dry of eligible peers.
--   **`seeder.dns.rate_limited_total`** (Counter): **Important**. Tracks queries blocked by rate limiting. High values may indicate an attack or legitimate clients being rate-limited (adjust limits if needed).
--   **`seeder.peers.total`** (Gauge): Raw size of the address book (includes unresponsive/unverified peers).
--   **`seeder.mutex_poisoning_total`** (Counter, labels: `crawler`, `dns_handler`): **Critical**. Should always be zero. Any non-zero value indicates a serious issue where a thread panicked while holding the address book lock. Investigate immediately and consider restarting the service.
+-   **`seeder_peers_servable`** (Gauge, labels: `addr_family=v4|v6`): **Critical**. Peers the seeder will hand out: recently handshaked by zebra-network (so version-current and reachable), routable, on the default Zcash port, and neither banned nor misbehaving. If this drops to 0, the seeder is returning empty lists.
+-   **`seeder_peers_ineligible`** (Gauge, label: `reason`): Peers excluded this refresh, by reason (`not_recently_live`, `not_routable`, `wrong_port`, `banned`, `misbehaving`). The dominant reason is normally `not_recently_live` (unverified gossip). Use it to explain a low servable count.
+-   **`seeder_peers_known`** (Gauge): Raw size of the address book, including unverified and unreachable peers.
+-   **`seeder_min_protocol_version`** (Gauge): The protocol-version floor the handshake enforces (for example `170150` for NU6.2). Confirms which network upgrade peers must meet.
+-   **`seeder_build_info`** (Gauge = 1, labels: `version`, `network`): Build and network identification.
+-   **`seeder_dns_queries_total`** (Counter, label: `record_type=A|AAAA`): Traffic volume.
+-   **`seeder_dns_response_peers`** (Histogram): How many peers are returned per query. A healthy seeder returns near 25. A downward shift means the servable set is shrinking.
+-   **`seeder_dns_rate_limited_total`** (Counter): **Important**. Queries blocked by rate limiting. High values may indicate an attack or legitimate clients being rate-limited (adjust limits if needed).
+-   **`seeder_dns_errors_total`** (Counter): Should be near zero. Spikes indicate socket handling issues.
+-   **`seeder_mutex_poisoning_total`** (Counter, label: `location=cache_updater|metrics_logger`): **Critical**. Should always be zero. Any non-zero value means a thread panicked while holding the address book lock. Investigate immediately and consider restarting the service.
 
 ## Deployment
 

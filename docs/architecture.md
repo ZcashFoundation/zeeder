@@ -24,7 +24,7 @@ graph TD
 - **zebra-network**: Handles Zcash P2P networking and peer discovery
 - **hickory-dns**: DNS server framework
 - **Rate Limiter**: Per-IP rate limiting using governor crate
-- **Address Cache**: Lock-free cache of eligible peers, updated every 5 seconds
+- **Address Cache**: Lock-free cache of servable peers, updated every 5 seconds
 - **Address Book**: Thread-safe peer storage managed by zebra-network
 - **Metrics**: Prometheus metrics via metrics-exporter-prometheus
 
@@ -85,7 +85,7 @@ sequenceDiagram
     loop Every 5 seconds
         CacheUpdater->>AddressBook: Lock & read peers
         AddressBook-->>CacheUpdater: All peers
-        CacheUpdater->>CacheUpdater: Filter (global, correct port)
+        CacheUpdater->>CacheUpdater: Classify (recently-live, routable, default port, not banned)
         CacheUpdater->>CacheUpdater: Separate IPv4/IPv6
         CacheUpdater->>CacheUpdater: Shuffle & take 25 each
         CacheUpdater->>AddressCache: Update via watch channel
@@ -118,7 +118,7 @@ sequenceDiagram
 **How it works:**
 - zebra-network continuously discovers and manages peers
 - Metrics logger periodically logs Address Book stats
-- Metrics updated with peer counts (total, eligible IPv4/IPv6)
+- Metrics updated with peer counts (known, servable IPv4/IPv6, ineligible by reason)
 
 ## Components Deep Dive
 
@@ -133,8 +133,9 @@ sequenceDiagram
 - Address book maintenance
 
 **Our usage:**
-- Initialize with config and dummy inbound service (reject all)
-- Access Address Book for peer list
+- Initialize with config and a dummy inbound service (reject all)
+- Pass a `SeederChainTip` pinned to the current network upgrade, so the handshake rejects outdated-version peers
+- Read the Address Book for servable peers
 - Never send blockchain data (we're not a full node)
 
 **Files:** `src/server.rs` (initialization)
@@ -175,7 +176,7 @@ sequenceDiagram
 
 **Behavior:**
 - Rate-limited requests: dropped silently (no response)
-- Metric: `seeder.dns.rate_limited_total`
+- Metric: `seeder_dns_rate_limited_total`
 
 **Files:** `src/server.rs` (`RateLimiter` struct), `src/config.rs` (`RateLimitConfig`)
 
@@ -204,8 +205,8 @@ struct AddressRecords {
 
 // Cache updater runs every 5 seconds:
 // 1. Lock address book
-// 2. Filter peers (global IPs, correct port)
-// 3. Shuffle and take 25 each
+// 2. Classify peers (server::eligibility); keep servable ones
+// 3. Shuffle and take 25 each (per address family)
 // 4. Send to watch channel
 
 // DNS handler reads without locking:
@@ -237,10 +238,15 @@ let peers = match record_type {
 - Log error + increment metric
 - Continue serving (availability over strict correctness)
 
-**Peer Filtering (done in cache updater):**
-- Global IPs only (no loopback, unspecified, multicast)
-- Correct port (network default, usually 8233)
-- Separated by address family (IPv4/IPv6)
+**Peer Eligibility (done in cache updater, see `server::eligibility`):**
+
+A peer is *servable* only if it is:
+- Recently live: zebra-network handshaked it within the liveness window (transitively current-version and reachable)
+- Routable (no loopback, unspecified, multicast)
+- On the network default port (usually 8233)
+- Not banned and not flagged for misbehavior
+
+Servable peers are then separated by address family (IPv4/IPv6), shuffled, and capped at 25.
 
 ---
 
@@ -265,13 +271,16 @@ let peers = match record_type {
 **Prometheus metrics exposed on configurable endpoint (default `:9999/metrics`)**
 
 **Key metrics:**
-- `seeder.peers.total` - Total peers in address book
-- `seeder.peers.eligible` - Eligible peers (by address family)
-- `seeder.dns.queries_total` - DNS queries (by record type)
-- `seeder.dns.response_peers` - Histogram of peer count per response
-- `seeder.dns.rate_limited_total` - Rate-limited queries
-- `seeder.dns.errors_total` - DNS errors
-- `seeder.mutex_poisoning_total` - Mutex poisoning events
+- `seeder_peers_known` - Total peers in the address book (gauge)
+- `seeder_peers_servable` - Servable peers by address family (gauge, `addr_family`)
+- `seeder_peers_ineligible` - Excluded peers by reason (gauge, `reason`)
+- `seeder_min_protocol_version` - Enforced protocol-version floor (gauge)
+- `seeder_build_info` - Build and network identification (gauge, `version`/`network`)
+- `seeder_dns_queries_total` - DNS queries by record type (counter)
+- `seeder_dns_response_peers` - Peers per response (histogram)
+- `seeder_dns_rate_limited_total` - Rate-limited queries (counter)
+- `seeder_dns_errors_total` - DNS errors (counter)
+- `seeder_mutex_poisoning_total` - Mutex poisoning events (counter, `location`)
 
 **Files:** `src/metrics.rs`, `src/server.rs`
 
@@ -377,6 +386,33 @@ Implement per-IP rate limiting using `governor` crate:
 - No rate limiting - Rejected (unacceptable security risk)
 - Global rate limit - Rejected (single client could DoS all others)
 - Response size limiting - Rejected (insufficient, still allows amplification)
+
+---
+
+### ADR 004: Peer Eligibility and Protocol-Version Floor
+
+**Status:** Accepted
+
+**Context:**
+zebra-network's address book stores every peer it learns about, in every connection state, including `NeverAttemptedGossiped` addresses it has never contacted. `MetaAddr` carries no protocol version, so the seeder cannot filter served peers by version after the fact. The seeder also runs with no chain state, and zebra-network derives the handshake's minimum acceptable protocol version from the chain tip it is given.
+
+**Decision:**
+Serve a peer only when it is *servable*: recently handshaked (`was_recently_live`), routable, on the network default port, not banned, and not misbehaving. Implement the decision once in `server::eligibility`. Replace `NoChainTip` with a `SeederChainTip` pinned to the current network upgrade's activation height, so zebra-network's handshake enforces that upgrade's protocol-version floor and outdated peers never reach the address book.
+
+**Rationale:**
+- A recent handshake transitively proves the peer passed the version floor and advertised the network service, so liveness and version-correctness are a single check.
+- The floor is derived from zebra-chain's activation table, so it tracks future upgrades on a dependency bump rather than via a hardcoded constant.
+- No second peer database and no active probing: zebra-network already crawls, handshakes, and tracks liveness (honoring ADR 001).
+
+**Consequences:**
+- ✅ Outdated-version and unverified-gossip peers are no longer served (issue #19).
+- ✅ One tested predicate; rejection reasons are exported via `seeder_peers_ineligible{reason}`.
+- ⚠️ The served set is smaller than the raw address book; on sparse networks (testnet, IPv6) it can be thin. Watch `seeder_peers_servable`.
+- ⚠️ The floor reaches the highest upgrade the pinned zebra activates (NU6.2 today); full NU7 enforcement arrives when a future zebra release activates it. A tripwire test pins the expected floor.
+
+**Alternatives Considered:**
+- Active per-peer probing (sipa bitcoin-seeder style) - Rejected: duplicates zebra-network's crawling and contradicts ADR 001.
+- A configurable version override - Rejected: the derived floor tracks upgrades automatically; an override invites pointing nodes at the wrong fork.
 
 ## Design Principles
 

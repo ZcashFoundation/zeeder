@@ -204,7 +204,7 @@ ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
 - ✅ Running as non-root user
 - ✅ DNS domain validation (automatic)
 - ✅ Regular security updates
-- ✅ Monitor `seeder.mutex_poisoning_total` metric
+- ✅ Monitor `seeder_mutex_poisoning_total` metric
 
 ## Monitoring & Operations
 
@@ -216,20 +216,23 @@ ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
 
 | Metric | Type | Labels | Description | Alert If |
 |--------|------|--------|-------------|----------|
-| `seeder.peers.eligible` | Gauge | `addr_family=v4\|v6` | Eligible peers | < 10 |
-| `seeder.mutex_poisoning_total` | Counter | `location=crawler\|dns_handler` | Mutex poisoning events | > 0 |
-| `seeder.dns.rate_limited_total` | Counter | - | Rate-limited queries | Spike indicates attack |
-| `seeder.dns.errors_total` | Counter | - | DNS errors | > 0 (sustained) |
-| `seeder.dns.queries_total` | Counter | `record_type=A\|AAAA` | Total queries | - |
-| `seeder.dns.response_peers` | Histogram | - | Peers per response | - |
-| `seeder.peers.total` | Gauge | - | Total peers in book | - |
+| `seeder_peers_servable` | Gauge | `addr_family=v4\|v6` | Servable peers (recently-live, current-version) | < 10 |
+| `seeder_peers_ineligible` | Gauge | `reason=not_recently_live\|not_routable\|wrong_port\|banned\|misbehaving` | Excluded peers, by reason | - |
+| `seeder_peers_known` | Gauge | - | Total peers in the address book | - |
+| `seeder_min_protocol_version` | Gauge | - | Enforced protocol-version floor | changes only at a network upgrade |
+| `seeder_build_info` | Gauge | `version`, `network` | Build and network identification | - |
+| `seeder_mutex_poisoning_total` | Counter | `location=cache_updater\|metrics_logger` | Mutex poisoning events | > 0 |
+| `seeder_dns_rate_limited_total` | Counter | - | Rate-limited queries | Spike indicates attack |
+| `seeder_dns_errors_total` | Counter | - | DNS errors | > 0 (sustained) |
+| `seeder_dns_queries_total` | Counter | `record_type=A\|AAAA` | Total queries | - |
+| `seeder_dns_response_peers` | Histogram | - | Peers per response | - |
 
 ### Sample Prometheus Queries
 
-**Eligible peer count:**
+**Servable peer count:**
 ```promql
-seeder_peers_eligible{addr_family="v4"}
-seeder_peers_eligible{addr_family="v6"}
+seeder_peers_servable{addr_family="v4"}
+seeder_peers_servable{addr_family="v6"}
 ```
 
 **Query rate (queries/sec):**
@@ -256,7 +259,7 @@ groups:
   - name: zebra-seeder
     rules:
       - alert: SeederLowPeerCount
-        expr: seeder_peers_eligible < 10
+        expr: seeder_peers_servable < 10
         for: 15m
         annotations:
           summary: "Seeder has low peer count"
@@ -278,7 +281,7 @@ groups:
 **No peers returning:**
 ```bash
 # Check peer count
-curl -s http://localhost:9999/metrics | grep peers_eligible
+curl -s http://localhost:9999/metrics | grep peers_servable
 
 # Check logs for errors
 journalctl -u zebra-seeder -n 100
