@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, net::IpAddr, sync::Arc, time::Duration};
 
 use color_eyre::eyre::{Context, Result};
 use hickory_proto::{
@@ -10,7 +10,7 @@ use hickory_server::{
     server::{RequestHandler, ResponseHandler, ResponseInfo, Server},
     zone_handler::MessageResponseBuilder,
 };
-use metrics::{counter, gauge, histogram};
+use metrics::{counter, histogram};
 use tokio::{
     net::{TcpListener, UdpSocket},
     sync::watch,
@@ -27,6 +27,7 @@ use crate::{
 };
 
 mod address_cache;
+mod eligibility;
 mod rate_limiter;
 
 pub async fn spawn(config: SeederConfig) -> Result<()> {
@@ -161,39 +162,27 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
 }
 
 fn log_crawler_status(book: &zebra_network::AddressBook, default_port: u16) {
-    let total_peers = book.len();
+    let now = chrono::Utc::now();
+    let banned: HashSet<IpAddr> = book.bans().keys().copied().collect();
 
-    // Calculate eligible peers (passing filter criteria)
-    let peers: Vec<_> = book.peers().collect();
-
-    let eligible_v4 = peers
-        .iter()
-        .filter(|meta| {
-            let ip = meta.addr().ip();
-            let is_global = !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast();
-            is_global && ip.is_ipv4() && meta.addr().port() == default_port
-        })
-        .count();
-
-    let eligible_v6 = peers
-        .iter()
-        .filter(|meta| {
-            let ip = meta.addr().ip();
-            let is_global = !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast();
-            is_global && ip.is_ipv6() && meta.addr().port() == default_port
-        })
-        .count();
+    let mut servable_v4 = 0usize;
+    let mut servable_v6 = 0usize;
+    for meta in book.peers() {
+        if eligibility::classify_peer(&meta, now, default_port, &banned).is_ok() {
+            if meta.addr().ip().is_ipv4() {
+                servable_v4 += 1;
+            } else {
+                servable_v6 += 1;
+            }
+        }
+    }
 
     tracing::info!(
-        "Crawler Status: Total={} | Eligible IPv4={} | Eligible IPv6={}",
-        total_peers,
-        eligible_v4,
-        eligible_v6
+        total = book.len(),
+        servable_v4,
+        servable_v6,
+        "crawler status"
     );
-
-    gauge!("seeder.peers.total").set(total_peers as f64);
-    gauge!("seeder.peers.eligible", "addr_family" => "v4").set(eligible_v4 as f64);
-    gauge!("seeder.peers.eligible", "addr_family" => "v6").set(eligible_v6 as f64);
 }
 
 #[derive(Clone)]
