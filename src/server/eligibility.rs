@@ -20,10 +20,10 @@ use zebra_network::types::MetaAddr;
 
 /// Why a peer is not servable.
 ///
-/// Each variant maps to a stable snake_case `reason` metric label so operators
+/// Each variant maps to a stable `snake_case` `reason` metric label so operators
 /// (and agents) can see exactly why the served set is the size it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum IneligibleReason {
+pub(crate) enum IneligibleReason {
     /// Loopback, unspecified, or multicast address.
     NotRoutable,
     /// Not on the network's default port. DNS answers cannot convey a port, so
@@ -41,7 +41,7 @@ pub enum IneligibleReason {
 impl IneligibleReason {
     /// Every reason, so callers can zero each per-reason gauge on every refresh
     /// (a reason with no peers this cycle must report `0`, not a stale value).
-    pub const ALL: [IneligibleReason; 5] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::NotRoutable,
         Self::WrongPort,
         Self::Banned,
@@ -49,8 +49,8 @@ impl IneligibleReason {
         Self::NotRecentlyLive,
     ];
 
-    /// Stable snake_case label used as a metric value.
-    pub fn label(self) -> &'static str {
+    /// Stable `snake_case` label used as a metric value.
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::NotRoutable => "not_routable",
             Self::WrongPort => "wrong_port",
@@ -98,7 +98,7 @@ fn classify(
 /// `banned` is the set of IPs zebra-network is currently dropping. Membership is
 /// the ban signal: zebra records a timestamp per banned IP but checks bans by
 /// presence, not expiry, so we mirror that.
-pub fn classify_peer(
+pub(crate) fn classify_peer(
     meta: &MetaAddr,
     now: DateTime<Utc>,
     default_port: u16,
@@ -117,12 +117,14 @@ pub fn classify_peer(
 
 #[cfg(test)]
 mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
     use super::*;
 
     const DEFAULT_PORT: u16 = 8233;
 
     fn routable_ip() -> IpAddr {
-        "8.8.8.8".parse().unwrap()
+        IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))
     }
 
     #[test]
@@ -135,12 +137,19 @@ mod tests {
 
     #[test]
     fn non_routable_addresses_are_rejected() {
-        for raw in ["127.0.0.1", "0.0.0.0", "224.0.0.1", "::1", "::", "ff02::1"] {
-            let ip: IpAddr = raw.parse().unwrap();
+        let cases = [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1)),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1)),
+        ];
+        for ip in cases {
             assert_eq!(
                 classify(ip, DEFAULT_PORT, DEFAULT_PORT, false, 0, true),
                 Err(IneligibleReason::NotRoutable),
-                "{raw} should be NotRoutable"
+                "{ip} should be NotRoutable"
             );
         }
     }
@@ -183,7 +192,7 @@ mod tests {
         // most structural reason first, so the metric attribution is stable.
         assert_eq!(
             classify(
-                "127.0.0.1".parse().unwrap(),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
                 1234,
                 DEFAULT_PORT,
                 true,

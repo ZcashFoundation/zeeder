@@ -7,7 +7,7 @@ echo "Running fmt check..."
 cargo fmt --all -- --check
 
 echo "Running clippy check..."
-cargo clippy -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
 
 echo "Building..."
 cargo build --verbose

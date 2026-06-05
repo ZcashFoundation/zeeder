@@ -1,57 +1,54 @@
+//! Layered configuration for the seeder: defaults, then an optional TOML file,
+//! then `ZEBRA_SEEDER__*` environment variables (each layer overriding the last).
+
 use color_eyre::eyre::Result;
 use config::{Config, Environment, File};
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-/// Configuration for the Zebra Seeder.
+/// Configuration for the Zebra seeder.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
-pub struct SeederConfig {
+pub(crate) struct SeederConfig {
     /// The Zebra network configuration.
-    pub network: zebra_network::Config,
+    pub(crate) network: zebra_network::Config,
 
     /// The socket address Hickory DNS will bind to.
     ///
     /// Defaults to `0.0.0.0:53`.
-    pub dns_listen_addr: SocketAddr,
+    pub(crate) dns_listen_addr: SocketAddr,
 
     /// The domain name the seeder is authoritative for.
-    pub seed_domain: String,
+    pub(crate) seed_domain: String,
 
-    /// DNS response TTL (Time To Live) in seconds.
+    /// DNS response TTL (time to live) in seconds.
     ///
-    /// Controls how long clients cache DNS responses.
-    /// Lower values mean fresher data but more queries.
-    /// Higher values reduce query load but slower updates.
-    ///
-    /// Defaults to `600` (10 minutes).
-    pub dns_ttl: u32,
+    /// Controls how long clients cache DNS responses. Lower values mean fresher
+    /// data but more queries; higher values reduce load but propagate updates
+    /// more slowly. Defaults to `600` (10 minutes).
+    pub(crate) dns_ttl: u32,
 
-    /// Prometheus metrics configuration.
-    ///
-    /// If `None`, metrics are disabled.
-    pub metrics: Option<MetricsConfig>,
+    /// Prometheus metrics configuration. If `None`, metrics are disabled.
+    pub(crate) metrics: Option<MetricsConfig>,
 
-    /// Rate limiting configuration.
-    ///
-    /// If `None`, rate limiting is disabled (NOT recommended for production).
-    pub rate_limit: Option<RateLimitConfig>,
+    /// Rate limiting configuration. If `None`, rate limiting is disabled (not
+    /// recommended for production).
+    pub(crate) rate_limit: Option<RateLimitConfig>,
 }
 
 /// Configuration for Prometheus metrics.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
-pub struct MetricsConfig {
-    /// The socket address to expose Prometheus metrics on.
-    ///
-    /// Defaults to `0.0.0.0:9999`.
-    pub endpoint_addr: SocketAddr,
+pub(crate) struct MetricsConfig {
+    /// The socket address to expose Prometheus metrics on. Defaults to
+    /// `0.0.0.0:9999`.
+    pub(crate) endpoint_addr: SocketAddr,
 }
 
 impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
-            endpoint_addr: "0.0.0.0:9999".parse().expect("valid address"),
+            endpoint_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 9999),
         }
     }
 }
@@ -59,16 +56,13 @@ impl Default for MetricsConfig {
 /// Configuration for DNS query rate limiting.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
-pub struct RateLimitConfig {
-    /// Maximum queries per second per IP address.
-    ///
-    /// Defaults to `10`.
-    pub queries_per_second: u32,
+pub(crate) struct RateLimitConfig {
+    /// Maximum queries per second per IP address. Defaults to `10`.
+    pub(crate) queries_per_second: u32,
 
-    /// Burst capacity (maximum queries in a short burst).
-    ///
-    /// Defaults to `20` (2x the rate).
-    pub burst_size: u32,
+    /// Burst capacity (maximum queries in a short burst). Defaults to `20`
+    /// (twice the rate).
+    pub(crate) burst_size: u32,
 }
 
 impl Default for RateLimitConfig {
@@ -84,11 +78,9 @@ impl Default for SeederConfig {
     fn default() -> Self {
         Self {
             network: zebra_network::Config::default(),
-            dns_listen_addr: "0.0.0.0:53"
-                .parse()
-                .expect("hardcoded address must be valid"),
+            dns_listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 53),
             seed_domain: "mainnet.seeder.example.com".to_string(),
-            dns_ttl: 600, // 10 minutes
+            dns_ttl: 600,
             metrics: None,
             rate_limit: Some(RateLimitConfig::default()),
         }
@@ -96,14 +88,14 @@ impl Default for SeederConfig {
 }
 
 impl SeederConfig {
-    /// Load the configuration from the given path, merging with default settings and
+    /// Load configuration, layering defaults, an optional TOML file, and
     /// environment variables.
     ///
-    /// Precedence:
-    /// 1. Environment Variables (ZEBRA_SEEDER_*)
-    /// 2. Config File (if path is provided)
-    /// 3. Default Values
-    pub fn load_with_env(path: Option<std::path::PathBuf>) -> Result<Self> {
+    /// Precedence, lowest to highest:
+    /// 1. Default values
+    /// 2. Config file (if a path is provided)
+    /// 3. Environment variables (`ZEBRA_SEEDER__*`)
+    pub(crate) fn load_with_env(path: Option<std::path::PathBuf>) -> Result<Self> {
         let mut builder = Config::builder().add_source(Config::try_from(&Self::default())?);
 
         if let Some(path) = path {
@@ -116,21 +108,8 @@ impl SeederConfig {
                 .try_parsing(true),
         );
 
-        let config = builder.build()?;
-        let seeder_config: SeederConfig = config.try_deserialize()?;
+        let seeder_config: Self = builder.build()?.try_deserialize()?;
 
         Ok(seeder_config)
-    }
-
-    /// Load the configuration from the given path, using default settings for any
-    /// unspecified fields.
-    ///
-    /// This is a convenience wrapper around `load_with_env` that ignores environment variables
-    /// for testing purposes, or can be used if env vars are not desired.
-    /// However, strictly following the pattern, `load_with_env` is the primary entry point.
-    // In Zebrad, `load` usually implies just file + defaults, but here we generally want Env too.
-    // For simplicity and matching typical app flow, strictly following the prompt's request for "load" and "load_with_env":
-    pub fn load(path: std::path::PathBuf) -> Result<Self> {
-        Self::load_with_env(Some(path))
     }
 }

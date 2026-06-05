@@ -16,7 +16,7 @@ use tokio::{
     sync::watch,
     time,
 };
-use tracing::{info_span, Instrument};
+use tracing::{Instrument, info_span};
 use zebra_chain::chain_tip::ChainTip;
 
 use crate::{
@@ -32,7 +32,15 @@ mod chain_tip;
 mod eligibility;
 mod rate_limiter;
 
-pub async fn spawn(config: SeederConfig) -> Result<()> {
+/// How often the metrics logger task logs address-book status. zebra-network
+/// crawls continuously; this interval only controls periodic status logging.
+#[allow(
+    clippy::duration_suboptimal_units,
+    reason = "seconds keeps this interval consistent with the other Duration constants"
+)]
+const METRICS_LOG_INTERVAL: Duration = Duration::from_secs(600);
+
+pub(crate) async fn spawn(config: SeederConfig) -> Result<()> {
     tracing::info!("Initializing zebra-network...");
 
     // Dummy inbound service that rejects everything
@@ -43,14 +51,15 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
     });
 
     // Provide a user agent
-    let user_agent = if let Some(sha) = option_env!("VERGEN_GIT_SHA") {
-        let short_sha = &sha[..7.min(sha.len())];
-        format!("zebra-seeder/{} ({})", env!("CARGO_PKG_VERSION"), short_sha)
-    } else {
-        format!("zebra-seeder/{}", env!("CARGO_PKG_VERSION"))
-    };
+    let user_agent = option_env!("VERGEN_GIT_SHA").map_or_else(
+        || format!("zebra-seeder/{}", env!("CARGO_PKG_VERSION")),
+        |sha| {
+            let short_sha = &sha[..7.min(sha.len())];
+            format!("zebra-seeder/{} ({short_sha})", env!("CARGO_PKG_VERSION"))
+        },
+    );
 
-    tracing::info!("User-Agent: {}", user_agent);
+    tracing::info!("User-Agent: {user_agent}");
 
     // Pin a chain tip at the current network upgrade so zebra-network's
     // handshake rejects peers advertising an outdated protocol version.
@@ -64,7 +73,7 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
         %min_protocol_version,
         "enforcing peer protocol-version floor"
     );
-    gauge!("seeder_min_protocol_version").set(min_protocol_version.0 as f64);
+    gauge!("seeder_min_protocol_version").set(f64::from(min_protocol_version.0));
     gauge!(
         "seeder_build_info",
         "version" => env!("CARGO_PKG_VERSION"),
@@ -75,9 +84,6 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
     // Initialize zebra-network
     let (peer_set, address_book, _peer_sender) =
         zebra_network::init(config.network.clone(), inbound_service, tip, user_agent).await;
-
-    // Metrics/status logging interval (zebra-network handles actual crawling internally)
-    const METRICS_LOG_INTERVAL: Duration = Duration::from_secs(600); // 10 minutes
 
     // Spawn the metrics logger task
     let address_book_monitor = address_book.clone();
@@ -109,7 +115,7 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
     });
 
     // Initialize rate limiter if configured
-    let (rate_limiter, prune_task) = rate_limiter::spawn(config.clone());
+    let (rate_limiter, prune_task) = rate_limiter::spawn(&config);
 
     tracing::info!("Initializing DNS server on {}", config.dns_listen_addr);
 
@@ -143,8 +149,8 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
     // We want to run it concurrently with ctrl_c.
 
     tokio::select! {
-        result = server.block_until_done() => {
-            result.wrap_err("DNS server crashed")?;
+        dns_outcome = server.block_until_done() => {
+            dns_outcome.wrap_err("DNS server crashed")?;
             tracing::info!("DNS server stopped, shutting down...");
 
             // Clean up metrics logger task
@@ -153,8 +159,8 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
             // Brief delay to allow cleanup
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        result = prune_task => {
-            tracing::error!(?result, "rate limiter prune task exited unexpectedly");
+        prune_outcome = prune_task => {
+            tracing::error!(?prune_outcome, "rate limiter prune task exited unexpectedly");
         }
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received shutdown signal, cleaning up...");
@@ -203,7 +209,7 @@ fn log_crawler_status(book: &zebra_network::AddressBook, default_port: u16) {
 }
 
 #[derive(Clone)]
-pub struct SeederAuthority {
+pub(crate) struct SeederAuthority {
     latest_addresses: watch::Receiver<AddressRecords>,
     seed_domain: String,
     dns_ttl: u32,
@@ -255,7 +261,7 @@ impl SeederAuthority {
             let client_ip = request.src().ip();
 
             if !limiter.check(client_ip) {
-                tracing::warn!("Rate limit exceeded for {}", client_ip);
+                tracing::warn!("Rate limit exceeded for {client_ip}");
                 counter!("seeder_dns_rate_limited_total").increment(1);
 
                 // Drop the request silently (no response to prevent amplification)
@@ -278,7 +284,7 @@ impl SeederAuthority {
             let name_norm = name_s.trim_end_matches('.');
             let seed_norm = self.seed_domain.trim_end_matches('.');
 
-            if name_norm != seed_norm && !name_norm.ends_with(&format!(".{}", seed_norm)) {
+            if name_norm != seed_norm && !name_norm.ends_with(&format!(".{seed_norm}")) {
                 // Return REFUSED
                 metadata.response_code = ResponseCode::Refused;
                 let response = builder.build(metadata, &[], &[], &[], &[]);
@@ -293,60 +299,63 @@ impl SeederAuthority {
                     });
             }
 
-            let mut records = Vec::new();
-
-            // Read from the cached addresses - no mutex lock needed!
-            // The cache is updated by a background task every 5 seconds.
-            let matched_peers = match record_type {
-                RecordType::A => self.latest_addresses.borrow().ipv4.clone(),
-                RecordType::AAAA => self.latest_addresses.borrow().ipv6.clone(),
-                _ => Vec::new(),
-            };
-
-            histogram!("seeder_dns_response_peers").record(matched_peers.len() as f64);
-
-            for addr in matched_peers {
-                let rdata = match addr.ip() {
-                    std::net::IpAddr::V4(ipv4) => RData::A(hickory_proto::rr::rdata::A(ipv4)),
-                    std::net::IpAddr::V6(ipv6) => RData::AAAA(hickory_proto::rr::rdata::AAAA(ipv6)),
-                };
-
-                let record = Record::from_rdata(name.clone().into(), self.dns_ttl, rdata);
-                records.push(record);
-            }
-
-            match record_type {
-                RecordType::A | RecordType::AAAA => {
-                    // Record metric by type
-                    let type_label = match record_type {
-                        RecordType::A => "A",
-                        RecordType::AAAA => "AAAA",
-                        _ => "other",
-                    };
-                    counter!("seeder_dns_queries_total", &[("record_type", type_label)])
-                        .increment(1);
-
-                    let response = builder.build(metadata, records.iter(), &[], &[], &[]);
+            // We only serve address records. Resolve the family-specific peer
+            // set and metric label up front; any other query type gets an empty
+            // NOERROR response.
+            #[allow(
+                clippy::wildcard_enum_match_arm,
+                reason = "RecordType has many variants; the seeder serves only A and AAAA"
+            )]
+            let (peers, type_label) = match record_type {
+                RecordType::A => (self.latest_addresses.borrow().ipv4.clone(), "A"),
+                RecordType::AAAA => (self.latest_addresses.borrow().ipv6.clone(), "AAAA"),
+                _ => {
+                    let response = builder.build(metadata, &[], &[], &[], &[]);
                     return response_handle
                         .send_response(response)
                         .await
-                        .inspect_err(|e| {
-                            tracing::warn!("Failed to send DNS response: {}", e);
-                            counter!("seeder_dns_errors_total").increment(1);
-                        })
                         .unwrap_or_else(|_| {
                             ResponseInfo::from(Header {
                                 metadata,
                                 counts: HeaderCounts::default(),
-                            }) // fallback
+                            })
                         });
                 }
-                _ => {
-                    // For NS, SOA, etc, we might want to return something else or Refused.
-                    // Returning empty NOERROR or NXDOMAIN?
-                    // Let's return NOERROR empty for now.
-                }
-            }
+            };
+
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "histogram sample of a small peer count"
+            )]
+            histogram!("seeder_dns_response_peers").record(peers.len() as f64);
+
+            let records: Vec<Record> = peers
+                .into_iter()
+                .map(|addr| {
+                    let rdata = match addr.ip() {
+                        IpAddr::V4(ipv4) => RData::A(hickory_proto::rr::rdata::A(ipv4)),
+                        IpAddr::V6(ipv6) => RData::AAAA(hickory_proto::rr::rdata::AAAA(ipv6)),
+                    };
+                    Record::from_rdata(name.clone().into(), self.dns_ttl, rdata)
+                })
+                .collect();
+
+            counter!("seeder_dns_queries_total", &[("record_type", type_label)]).increment(1);
+
+            let response = builder.build(metadata, records.iter(), &[], &[], &[]);
+            return response_handle
+                .send_response(response)
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("failed to send DNS response: {e}");
+                    counter!("seeder_dns_errors_total").increment(1);
+                })
+                .unwrap_or_else(|_| {
+                    ResponseInfo::from(Header {
+                        metadata,
+                        counts: HeaderCounts::default(),
+                    })
+                });
         }
 
         // Default response (SERVFAIL or just empty user defined)
@@ -366,7 +375,7 @@ impl SeederAuthority {
 
 #[cfg(test)]
 mod tests {
-    use std::net::IpAddr;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use super::*;
 
@@ -374,19 +383,19 @@ mod tests {
     #[test]
     fn test_rate_limiter_allows_normal_queries() {
         let limiter = RateLimiter::new_map(10, 20);
-        let test_ip: IpAddr = "192.168.1.1".parse().unwrap();
+        let test_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
 
-        // First query should be allowed
-        assert!(limiter.check(test_ip), "First query should be allowed");
-
-        // Second query should also be allowed (within burst)
-        assert!(limiter.check(test_ip), "Second query should be allowed");
+        assert!(limiter.check(test_ip), "first query should be allowed");
+        assert!(
+            limiter.check(test_ip),
+            "second query should be allowed within burst"
+        );
     }
 
     #[test]
     fn test_rate_limiter_blocks_excessive_queries() {
         let limiter = RateLimiter::new_map(1, 2); // Very low limits for testing
-        let test_ip: IpAddr = "192.168.1.2".parse().unwrap();
+        let test_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
 
         // First two queries should pass (burst size = 2)
         assert!(limiter.check(test_ip), "Query 1 should pass");
@@ -399,8 +408,8 @@ mod tests {
     #[test]
     fn test_rate_limiter_per_ip_isolation() {
         let limiter = RateLimiter::new_map(1, 1);
-        let ip1: IpAddr = "192.168.1.1".parse().unwrap();
-        let ip2: IpAddr = "192.168.1.2".parse().unwrap();
+        let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let ip2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
 
         // Exhaust IP1's quota
         assert!(limiter.check(ip1), "IP1 first query should pass");
@@ -413,92 +422,32 @@ mod tests {
     #[test]
     fn test_rate_limiter_ipv6_support() {
         let limiter = RateLimiter::new_map(10, 20);
-        let ipv6: IpAddr = "2001:db8::1".parse().unwrap();
+        let ipv6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1));
 
         assert!(limiter.check(ipv6), "IPv6 addresses should be supported");
     }
 
-    // Peer Filtering Logic Tests
-    #[test]
-    fn test_ipv4_is_global() {
-        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
-        let unspecified: IpAddr = "0.0.0.0".parse().unwrap();
-        let multicast: IpAddr = "224.0.0.1".parse().unwrap();
-        let global: IpAddr = "8.8.8.8".parse().unwrap();
-
-        // Test the same logic used in handle_request_inner for filtering
-        assert!(loopback.is_loopback(), "Loopback should be detected");
-        assert!(
-            unspecified.is_unspecified(),
-            "Unspecified should be detected"
-        );
-        assert!(multicast.is_multicast(), "Multicast should be detected");
-
-        let is_global = !global.is_loopback() && !global.is_unspecified() && !global.is_multicast();
-        assert!(is_global, "8.8.8.8 should be considered global");
-    }
-
-    #[test]
-    fn test_ipv6_is_global() {
-        let loopback: IpAddr = "::1".parse().unwrap();
-        let unspecified: IpAddr = "::".parse().unwrap();
-        let multicast: IpAddr = "ff02::1".parse().unwrap();
-        let global: IpAddr = "2001:4860:4860::8888".parse().unwrap();
-
-        assert!(loopback.is_loopback());
-        assert!(unspecified.is_unspecified());
-        assert!(multicast.is_multicast());
-
-        let is_global = !global.is_loopback() && !global.is_unspecified() && !global.is_multicast();
-        assert!(is_global, "Google DNS IPv6 should be considered global");
-    }
-
-    #[test]
-    fn test_private_ipv4_ranges() {
-        let private_10: IpAddr = "10.0.0.1".parse().unwrap();
-        let private_172: IpAddr = "172.16.0.1".parse().unwrap();
-        let private_192: IpAddr = "192.168.1.1".parse().unwrap();
-
-        // These are not loopback/unspecified/multicast, but they're private
-        // The server.rs logic doesn't explicitly filter private ranges,
-        // but we document this behavior for future reference
-        let is_global_10 =
-            !private_10.is_loopback() && !private_10.is_unspecified() && !private_10.is_multicast();
-        let is_global_172 = !private_172.is_loopback()
-            && !private_172.is_unspecified()
-            && !private_172.is_multicast();
-        let is_global_192 = !private_192.is_loopback()
-            && !private_192.is_unspecified()
-            && !private_192.is_multicast();
-
-        // Note: Current implementation would consider these "global"
-        // This is acceptable for a seeder as peers on private networks won't be reachable anyway
-        assert!(is_global_10);
-        assert!(is_global_172);
-        assert!(is_global_192);
-    }
-
     // DNS Integration Tests
-    // These require async and test the full DNS server stack
+    // These run the full DNS server stack against a real resolver.
 
+    use hickory_resolver::TokioResolver;
     use hickory_resolver::config::{
         ConnectionConfig, NameServerConfig, ResolverConfig, ResolverOpts,
     };
     use hickory_resolver::net::runtime::TokioRuntimeProvider;
-    use hickory_resolver::TokioResolver;
     use std::net::SocketAddr;
     use std::time::Duration;
     use tokio::net::TcpListener as TokioTcpListener;
 
-    /// Helper to create a DNS server on a random port for testing
+    type TestResult = color_eyre::Result<()>;
+
+    /// Bind a DNS server on a random local port for testing.
     async fn create_test_dns_server(
         authority: SeederAuthority,
-    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-        // Bind to a random port
-        let udp_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let server_addr = udp_socket.local_addr().unwrap();
-
-        let tcp_listener = TokioTcpListener::bind(server_addr).await.unwrap();
+    ) -> color_eyre::Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+        let udp_socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let server_addr = udp_socket.local_addr()?;
+        let tcp_listener = TokioTcpListener::bind(server_addr).await?;
 
         let mut server = Server::new(authority);
         server.register_socket(udp_socket);
@@ -508,14 +457,18 @@ mod tests {
             let _ = server.block_until_done().await;
         });
 
-        // Give server time to start
+        // Give the server time to start.
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        (server_addr, handle)
+        Ok((server_addr, handle))
     }
 
-    /// Helper to create a resolver pointing to our test server
-    fn create_test_resolver(server_addr: SocketAddr) -> TokioResolver {
+    /// Build a resolver pointing at our test server.
+    #[allow(
+        clippy::field_reassign_with_default,
+        reason = "ResolverOpts is non_exhaustive, so struct-literal construction is not allowed"
+    )]
+    fn create_test_resolver(server_addr: SocketAddr) -> color_eyre::Result<TokioResolver> {
         let mut config = ResolverConfig::from_parts(None, vec![], vec![]);
         let mut connection = ConnectionConfig::udp();
         connection.port = server_addr.port();
@@ -529,108 +482,93 @@ mod tests {
         opts.timeout = Duration::from_secs(2);
         opts.attempts = 1;
 
-        TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
+        let resolver = TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
             .with_options(opts)
-            .build()
-            .expect("test resolver should build")
+            .build()?;
+        Ok(resolver)
     }
 
-    /// Helper to create a test watch receiver with empty addresses for testing
-    fn create_test_address_receiver() -> watch::Receiver<AddressRecords> {
-        let (sender, receiver) = watch::channel(AddressRecords::default());
-        // Keep sender alive by leaking it (acceptable for tests)
+    /// A watch receiver pre-loaded with `records` for DNS-serving tests.
+    fn test_address_receiver(records: AddressRecords) -> watch::Receiver<AddressRecords> {
+        let (sender, receiver) = watch::channel(records);
+        // Leak the sender so the receiver stays open for the test's lifetime.
         std::mem::forget(sender);
         receiver
     }
 
     #[tokio::test]
-    async fn test_dns_server_starts_and_responds() {
-        let latest_addresses = create_test_address_receiver();
-
+    async fn test_dns_server_starts_and_responds() -> TestResult {
         let authority = SeederAuthority::new(
-            latest_addresses,
+            test_address_receiver(AddressRecords::default()),
             "mainnet.seeder.test".to_string(),
             600,
             None,
         );
 
-        let (server_addr, handle) = create_test_dns_server(authority).await;
+        let (server_addr, handle) = create_test_dns_server(authority).await?;
+        let resolver = create_test_resolver(server_addr)?;
 
-        // Create resolver
-        let resolver = create_test_resolver(server_addr);
-
-        // Query for A records - should get a valid response (possibly empty)
+        // The query should complete even with no peers; an empty answer is fine.
         let result = resolver
             .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::A)
             .await;
 
-        // The query should complete (even if no peers are available)
-        // An empty response or valid response is acceptable
         match result {
             Ok(response) => {
-                // Valid response - check all IPs are IPv4
-                for record in response.answers().iter() {
+                for record in response.answers() {
                     if let Some(ip) = record.data.ip_addr() {
                         assert!(ip.is_ipv4(), "A record should return IPv4");
                     }
                 }
             }
             Err(e) => {
-                // No error means query worked, empty is OK
                 let error_str = e.to_string();
                 assert!(
                     error_str.contains("no records") || error_str.contains("NoRecordsFound"),
-                    "Unexpected error: {}",
-                    e
+                    "unexpected error: {e}"
                 );
             }
         }
 
         handle.abort();
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_dns_refused_for_wrong_domain() {
-        let latest_addresses = create_test_address_receiver();
-
+    async fn test_dns_refused_for_wrong_domain() -> TestResult {
         let authority = SeederAuthority::new(
-            latest_addresses,
+            test_address_receiver(AddressRecords::default()),
             "mainnet.seeder.test".to_string(),
             600,
             None,
         );
 
-        let (server_addr, handle) = create_test_dns_server(authority).await;
-        let resolver = create_test_resolver(server_addr);
+        let (server_addr, handle) = create_test_dns_server(authority).await?;
+        let resolver = create_test_resolver(server_addr)?;
 
-        // Query for a different domain - should be refused
         let result = resolver
             .lookup("wrong.domain.test", hickory_proto::rr::RecordType::A)
             .await;
-
-        assert!(result.is_err(), "Query for wrong domain should fail");
+        assert!(result.is_err(), "query for wrong domain should fail");
 
         handle.abort();
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_dns_rate_limiting_blocks_excessive_queries() {
-        let latest_addresses = create_test_address_receiver();
-
-        // Very low rate limit for testing
+    async fn test_dns_rate_limiting_blocks_excessive_queries() -> TestResult {
         let rate_limiter = RateLimiter::new_map(1, 2);
-
         let authority = SeederAuthority::new(
-            latest_addresses,
+            test_address_receiver(AddressRecords::default()),
             "mainnet.seeder.test".to_string(),
             600,
             Some(rate_limiter),
         );
 
-        let (server_addr, handle) = create_test_dns_server(authority).await;
-        let resolver = create_test_resolver(server_addr);
+        let (server_addr, handle) = create_test_dns_server(authority).await?;
+        let resolver = create_test_resolver(server_addr)?;
 
-        // First two queries should succeed (within burst)
+        // The first two queries fit within the burst.
         let _ = resolver
             .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::A)
             .await;
@@ -638,45 +576,41 @@ mod tests {
             .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::A)
             .await;
 
-        // Third query should timeout (rate limited = dropped)
+        // The third is dropped, so it times out (or errors).
         let result = tokio::time::timeout(
             Duration::from_millis(500),
             resolver.lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::A),
         )
         .await;
-
-        // Should either timeout or get an error
-        assert!(
-            result.is_err() || result.unwrap().is_err(),
-            "Third query should be rate limited"
-        );
+        let was_dropped = match result {
+            Err(_elapsed) => true,
+            Ok(lookup) => lookup.is_err(),
+        };
+        assert!(was_dropped, "third query should be rate limited");
 
         handle.abort();
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_seeder_authority_handles_aaaa_queries() {
-        let latest_addresses = create_test_address_receiver();
-
+    async fn test_seeder_authority_handles_aaaa_queries() -> TestResult {
         let authority = SeederAuthority::new(
-            latest_addresses,
+            test_address_receiver(AddressRecords::default()),
             "mainnet.seeder.test".to_string(),
             600,
             None,
         );
 
-        let (server_addr, handle) = create_test_dns_server(authority).await;
-        let resolver = create_test_resolver(server_addr);
+        let (server_addr, handle) = create_test_dns_server(authority).await?;
+        let resolver = create_test_resolver(server_addr)?;
 
-        // Query for AAAA records
         let result = resolver
             .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::AAAA)
             .await;
 
-        // Should get a valid response (possibly empty for IPv6)
         match result {
             Ok(response) => {
-                for record in response.answers().iter() {
+                for record in response.answers() {
                     if let Some(ip) = record.data.ip_addr() {
                         assert!(ip.is_ipv6(), "AAAA record should return IPv6");
                     }
@@ -686,129 +620,74 @@ mod tests {
                 let error_str = e.to_string();
                 assert!(
                     error_str.contains("no records") || error_str.contains("NoRecordsFound"),
-                    "Unexpected error: {}",
-                    e
+                    "unexpected error: {e}"
                 );
             }
         }
 
         handle.abort();
+        Ok(())
     }
 
     /// End-to-end: a populated servable cache is served as exact A/AAAA records
     /// over the real DNS stack, split correctly by address family.
     #[tokio::test]
-    async fn serves_cached_servable_addresses() {
+    async fn serves_cached_servable_addresses() -> TestResult {
         use std::collections::HashSet;
 
         use zebra_network::PeerSocketAddr;
 
-        let records = AddressRecords {
-            ipv4: vec![
-                "1.2.3.4:8233".parse::<PeerSocketAddr>().unwrap(),
-                "5.6.7.8:8233".parse::<PeerSocketAddr>().unwrap(),
-            ],
-            ipv6: vec!["[2001:db8::1]:8233".parse::<PeerSocketAddr>().unwrap()],
-        };
-        let (sender, receiver) = watch::channel(records);
-        std::mem::forget(sender);
+        fn peer(ip: IpAddr) -> PeerSocketAddr {
+            PeerSocketAddr::from(SocketAddr::new(ip, 8233))
+        }
 
-        let authority =
-            SeederAuthority::new(receiver, "mainnet.seeder.test".to_string(), 600, None);
-        let (server_addr, handle) = create_test_dns_server(authority).await;
-        let resolver = create_test_resolver(server_addr);
+        let v4a = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let v4b = IpAddr::V4(Ipv4Addr::new(5, 6, 7, 8));
+        let v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1));
+
+        let records = AddressRecords {
+            ipv4: vec![peer(v4a), peer(v4b)],
+            ipv6: vec![peer(v6)],
+        };
+
+        let authority = SeederAuthority::new(
+            test_address_receiver(records),
+            "mainnet.seeder.test".to_string(),
+            600,
+            None,
+        );
+        let (server_addr, handle) = create_test_dns_server(authority).await?;
+        let resolver = create_test_resolver(server_addr)?;
 
         let a = resolver
             .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::A)
-            .await
-            .expect("A lookup should succeed");
+            .await?;
         let got_v4: HashSet<IpAddr> = a
             .answers()
             .iter()
             .filter_map(|r| r.data.ip_addr())
             .collect();
-        let want_v4: HashSet<IpAddr> = ["1.2.3.4".parse().unwrap(), "5.6.7.8".parse().unwrap()]
-            .into_iter()
-            .collect();
         assert_eq!(
-            got_v4, want_v4,
+            got_v4,
+            HashSet::from([v4a, v4b]),
             "A query should return exactly the cached IPv4 peers"
         );
 
         let aaaa = resolver
             .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::AAAA)
-            .await
-            .expect("AAAA lookup should succeed");
+            .await?;
         let got_v6: HashSet<IpAddr> = aaaa
             .answers()
             .iter()
             .filter_map(|r| r.data.ip_addr())
             .collect();
-        let want_v6: HashSet<IpAddr> = ["2001:db8::1".parse().unwrap()].into_iter().collect();
         assert_eq!(
-            got_v6, want_v6,
+            got_v6,
+            HashSet::from([v6]),
             "AAAA query should return exactly the cached IPv6 peers"
         );
 
         handle.abort();
-    }
-
-    // Property-Based Tests
-    // These use proptest to verify filtering logic with random inputs
-
-    use proptest::prelude::*;
-
-    /// The IP filtering logic used in handle_request_inner
-    fn is_routable(ip: IpAddr) -> bool {
-        !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast()
-    }
-
-    proptest! {
-        /// Verify that the IP filtering logic never panics on any valid IP address
-        #[test]
-        fn prop_ip_filtering_never_panics(ip_bytes in prop::array::uniform4(any::<u8>())) {
-            let ip = IpAddr::V4(std::net::Ipv4Addr::from(ip_bytes));
-            // Should never panic
-            let _ = is_routable(ip);
-        }
-
-        /// Verify that the IP filtering logic never panics on any valid IPv6 address
-        #[test]
-        fn prop_ipv6_filtering_never_panics(ip_bytes in prop::array::uniform16(any::<u8>())) {
-            let ip = IpAddr::V6(std::net::Ipv6Addr::from(ip_bytes));
-            // Should never panic
-            let _ = is_routable(ip);
-        }
-
-        /// Verify that loopback addresses are never considered routable
-        #[test]
-        fn prop_loopback_never_routable(last_byte in 1u8..=255u8) {
-            let ip = IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, last_byte));
-            prop_assert!(!is_routable(ip) || last_byte == 0, "Loopback should not be routable");
-        }
-
-        /// Verify that multicast addresses are never considered routable
-        #[test]
-        fn prop_multicast_never_routable(b2 in 0u8..=255u8, b3 in 0u8..=255u8, b4 in 0u8..=255u8) {
-            // Multicast range: 224.0.0.0 - 239.255.255.255
-            let ip = IpAddr::V4(std::net::Ipv4Addr::new(224 + (b2 % 16), b2, b3, b4));
-            prop_assert!(!is_routable(ip), "Multicast should not be routable");
-        }
-    }
-
-    #[test]
-    fn test_routable_ip_classification() {
-        // Global IPs should be routable
-        assert!(is_routable("8.8.8.8".parse().unwrap()));
-        assert!(is_routable("1.1.1.1".parse().unwrap()));
-        assert!(is_routable("2001:4860:4860::8888".parse().unwrap()));
-
-        // Special addresses should NOT be routable
-        assert!(!is_routable("127.0.0.1".parse().unwrap()));
-        assert!(!is_routable("0.0.0.0".parse().unwrap()));
-        assert!(!is_routable("224.0.0.1".parse().unwrap()));
-        assert!(!is_routable("::1".parse().unwrap()));
-        assert!(!is_routable("::".parse().unwrap()));
-        assert!(!is_routable("ff02::1".parse().unwrap()));
+        Ok(())
     }
 }

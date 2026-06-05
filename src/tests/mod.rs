@@ -1,2 +1,2 @@
-pub mod cli_tests;
-pub mod config_tests;
+mod cli_tests;
+mod config_tests;

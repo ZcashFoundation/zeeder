@@ -16,15 +16,16 @@ use std::{future, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use zebra_chain::{
+    BoxError,
     block::{self, Height},
     chain_tip::ChainTip,
     parameters::{Network, NetworkUpgrade},
-    transaction, BoxError,
+    transaction,
 };
 
 /// A chain tip frozen at the activation height of the network's current upgrade.
 #[derive(Clone, Debug)]
-pub struct SeederChainTip {
+pub(crate) struct SeederChainTip {
     height: Height,
 }
 
@@ -35,7 +36,7 @@ impl SeederChainTip {
     /// The height comes from zebra-chain's activation table rather than a
     /// hardcoded constant, so the enforced version floor rises automatically
     /// when a future zebra-chain release activates the next upgrade.
-    pub fn current_upgrade(network: &Network) -> Self {
+    pub(crate) fn current_upgrade(network: &Network) -> Self {
         let (_upgrade, height) =
             NetworkUpgrade::current_with_activation_height(network, Height::MAX);
         Self { height }
