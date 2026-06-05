@@ -217,7 +217,7 @@ ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
 | Metric | Type | Labels | Description | Alert If |
 |--------|------|--------|-------------|----------|
 | `seeder_peers_servable` | Gauge | `addr_family=v4\|v6` | Servable peers (recently-live, current-version) | < 10 |
-| `seeder_peers_ineligible` | Gauge | `reason=not_recently_live\|not_routable\|wrong_port\|banned\|misbehaving` | Excluded peers, by reason | - |
+| `seeder_peers_ineligible` | Gauge | `reason=not_recently_live\|not_routable\|wrong_port\|banned\|misbehaving\|services_insufficient` | Excluded peers, by reason | - |
 | `seeder_peers_known` | Gauge | - | Total peers in the address book | - |
 | `seeder_min_protocol_version` | Gauge | - | Enforced protocol-version floor | changes only at a network upgrade |
 | `seeder_build_info` | Gauge | `version`, `network` | Build and network identification | - |
@@ -315,7 +315,7 @@ systemctl restart zebra-seeder
 **High memory usage:**
 ```bash
 # Check address book size
-curl -s http://localhost:9999/metrics | grep peers_total
+curl -s http://localhost:9999/metrics | grep peers_known
 
 # Clear cache if needed (will rebuild)
 rm -rf ~/.cache/zebra/network/*

@@ -9,6 +9,7 @@ use chrono::Utc;
 use metrics::{counter, gauge};
 use rand::{rng, seq::SliceRandom};
 use tokio::sync::watch;
+use zebra_chain::parameters::Network;
 use zebra_network::{AddressBook, PeerSocketAddr};
 
 use crate::server::eligibility::{IneligibleReason, classify_peer};
@@ -32,7 +33,7 @@ pub(crate) struct AddressRecords {
 /// Spawns the background task that refreshes the served-address cache.
 pub(crate) fn spawn(
     address_book: Arc<std::sync::Mutex<AddressBook>>,
-    default_port: u16,
+    network: Network,
 ) -> watch::Receiver<AddressRecords> {
     let (latest_addresses_sender, latest_addresses) = watch::channel(AddressRecords::default());
 
@@ -52,7 +53,7 @@ pub(crate) fn spawn(
                         poisoned.into_inner()
                     }
                 };
-                servable_records(&guard, default_port)
+                servable_records(&guard, &network)
             };
 
             let _ = latest_addresses_sender.send(records);
@@ -72,7 +73,7 @@ pub(crate) fn spawn(
     clippy::cast_precision_loss,
     reason = "gauge values are peer counts; f64 precision loss is irrelevant"
 )]
-fn servable_records(book: &AddressBook, default_port: u16) -> AddressRecords {
+fn servable_records(book: &AddressBook, network: &Network) -> AddressRecords {
     let now = Utc::now();
     let banned: HashSet<IpAddr> = book.bans().keys().copied().collect();
 
@@ -81,7 +82,7 @@ fn servable_records(book: &AddressBook, default_port: u16) -> AddressRecords {
     let mut ineligible: HashMap<IneligibleReason, usize> = HashMap::new();
 
     for meta in book.peers() {
-        match classify_peer(&meta, now, default_port, &banned) {
+        match classify_peer(&meta, now, &banned, network) {
             Ok(()) => {
                 let addr = meta.addr();
                 if addr.ip().is_ipv4() {
@@ -117,7 +118,7 @@ mod tests {
 
     use tracing::Span;
     use zebra_chain::parameters::Network;
-    use zebra_network::types::MetaAddr;
+    use zebra_network::types::{MetaAddr, PeerServices};
 
     use super::*;
 
@@ -141,22 +142,45 @@ mod tests {
         book.update(MetaAddr::new_initial_peer(peer([1, 2, 3, 4], 8233)));
         assert_eq!(book.len(), 1, "the peer should be in the book");
 
-        let records = servable_records(&book, Network::Mainnet.default_port());
+        let records = servable_records(&book, &Network::Mainnet);
         assert!(
             records.ipv4.is_empty() && records.ipv6.is_empty(),
             "never-handshaked peers must not be served"
         );
     }
 
-    /// A peer zebra-network recently handshaked is servable.
+    /// A recently-handshaked full node (advertising NODE_NETWORK) is servable.
     #[test]
-    fn recently_responded_peer_is_servable() {
+    fn recently_connected_full_node_is_servable() {
         let mut book = empty_book();
-        book.update(MetaAddr::new_responded(peer([1, 2, 3, 4], 8233), None));
+        book.update(MetaAddr::new_connected(
+            peer([1, 2, 3, 4], 8233),
+            &PeerServices::NODE_NETWORK,
+            false,
+        ));
 
-        let records = servable_records(&book, Network::Mainnet.default_port());
+        let records = servable_records(&book, &Network::Mainnet);
         let served: Vec<IpAddr> = records.ipv4.iter().map(|p| p.ip()).collect();
         assert_eq!(served, vec![IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))]);
+    }
+
+    /// A recently-handshaked peer that does not advertise NODE_NETWORK is not
+    /// servable: zebra's handshake enforces the version floor but not the
+    /// full-node service, so the seeder must gate on it.
+    #[test]
+    fn recently_connected_non_full_node_is_not_servable() {
+        let mut book = empty_book();
+        book.update(MetaAddr::new_connected(
+            peer([1, 2, 3, 4], 8233),
+            &PeerServices::empty(),
+            false,
+        ));
+
+        let records = servable_records(&book, &Network::Mainnet);
+        assert!(
+            records.ipv4.is_empty() && records.ipv6.is_empty(),
+            "a recently-live non-full-node peer must not be served"
+        );
     }
 
     /// A handshaked peer on a non-default port cannot be reached via DNS (which
@@ -164,9 +188,13 @@ mod tests {
     #[test]
     fn responded_peer_on_wrong_port_is_not_servable() {
         let mut book = empty_book();
-        book.update(MetaAddr::new_responded(peer([1, 2, 3, 4], 1234), None));
+        book.update(MetaAddr::new_connected(
+            peer([1, 2, 3, 4], 1234),
+            &PeerServices::NODE_NETWORK,
+            false,
+        ));
 
-        let records = servable_records(&book, Network::Mainnet.default_port());
+        let records = servable_records(&book, &Network::Mainnet);
         assert!(
             records.ipv4.is_empty(),
             "peers on a non-default port must not be served"

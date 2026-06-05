@@ -4,9 +4,11 @@
 //! A peer is *servable* only when zebra-network has recently completed a
 //! handshake with it. A recent handshake transitively proves the peer passed
 //! zebra-network's protocol-version floor (it would otherwise have been rejected
-//! with `ObsoleteVersion`) and advertised the network service. On top of that we
-//! require a routable address on the network's default port, no ban, and no
-//! recorded misbehavior.
+//! with `ObsoleteVersion`). On top of that we require a routable address on the
+//! network's default port, the full-node (`NODE_NETWORK`) service, no ban, and
+//! no recorded misbehavior. The service check matters because zebra's handshake
+//! enforces the version floor but not `NODE_NETWORK`, so a recently-live peer can
+//! still be a non-full-node that a bootstrapping node cannot sync from.
 //!
 //! The branch logic lives in [`classify`], which is pure over primitives so
 //! every reason is unit-testable without constructing a live [`MetaAddr`].
@@ -16,6 +18,7 @@
 use std::{collections::HashSet, net::IpAddr};
 
 use chrono::{DateTime, Utc};
+use zebra_chain::parameters::Network;
 use zebra_network::types::MetaAddr;
 
 /// Why a peer is not servable.
@@ -36,17 +39,21 @@ pub(crate) enum IneligibleReason {
     /// No recent successful handshake: gossiped-but-never-contacted, failed, or
     /// stale peers. This is the gate that keeps unverified addresses out.
     NotRecentlyLive,
+    /// The peer does not advertise the full-node (`NODE_NETWORK`) service, so a
+    /// bootstrapping node cannot sync the chain from it.
+    ServicesInsufficient,
 }
 
 impl IneligibleReason {
     /// Every reason, so callers can zero each per-reason gauge on every refresh
     /// (a reason with no peers this cycle must report `0`, not a stale value).
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::NotRoutable,
         Self::WrongPort,
         Self::Banned,
         Self::Misbehaving,
         Self::NotRecentlyLive,
+        Self::ServicesInsufficient,
     ];
 
     /// Stable `snake_case` label used as a metric value.
@@ -57,6 +64,7 @@ impl IneligibleReason {
             Self::Banned => "banned",
             Self::Misbehaving => "misbehaving",
             Self::NotRecentlyLive => "not_recently_live",
+            Self::ServicesInsufficient => "services_insufficient",
         }
     }
 }
@@ -65,8 +73,9 @@ impl IneligibleReason {
 ///
 /// Pure over primitives so every branch is unit-testable. The check order also
 /// fixes which reason is attributed when several fail at once: the cheapest,
-/// most structural reasons first, liveness last (the dominant reason in
-/// practice, since most address-book entries are unverified gossip).
+/// most structural reasons first, then liveness (the dominant reason in
+/// practice, since most address-book entries are unverified gossip), then the
+/// service check, which only applies to peers that are otherwise servable.
 fn classify(
     ip: IpAddr,
     port: u16,
@@ -74,6 +83,7 @@ fn classify(
     is_banned: bool,
     misbehavior_score: u32,
     is_recently_live: bool,
+    advertises_node_network: bool,
 ) -> Result<(), IneligibleReason> {
     if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
         return Err(IneligibleReason::NotRoutable);
@@ -90,6 +100,9 @@ fn classify(
     if !is_recently_live {
         return Err(IneligibleReason::NotRecentlyLive);
     }
+    if !advertises_node_network {
+        return Err(IneligibleReason::ServicesInsufficient);
+    }
     Ok(())
 }
 
@@ -97,21 +110,24 @@ fn classify(
 ///
 /// `banned` is the set of IPs zebra-network is currently dropping. Membership is
 /// the ban signal: zebra records a timestamp per banned IP but checks bans by
-/// presence, not expiry, so we mirror that.
+/// presence, not expiry, so we mirror that. The full-node service check reuses
+/// zebra's own `last_known_info_is_valid_for_outbound`, which requires
+/// `NODE_NETWORK` (treating unknown services as a node).
 pub(crate) fn classify_peer(
     meta: &MetaAddr,
     now: DateTime<Utc>,
-    default_port: u16,
     banned: &HashSet<IpAddr>,
+    network: &Network,
 ) -> Result<(), IneligibleReason> {
     let addr = meta.addr();
     classify(
         addr.ip(),
         addr.port(),
-        default_port,
+        network.default_port(),
         banned.contains(&addr.ip()),
         meta.misbehavior(),
         meta.was_recently_live(now),
+        meta.last_known_info_is_valid_for_outbound(network),
     )
 }
 
@@ -130,7 +146,15 @@ mod tests {
     #[test]
     fn servable_when_every_condition_is_met() {
         assert_eq!(
-            classify(routable_ip(), DEFAULT_PORT, DEFAULT_PORT, false, 0, true),
+            classify(
+                routable_ip(),
+                DEFAULT_PORT,
+                DEFAULT_PORT,
+                false,
+                0,
+                true,
+                true
+            ),
             Ok(())
         );
     }
@@ -147,7 +171,7 @@ mod tests {
         ];
         for ip in cases {
             assert_eq!(
-                classify(ip, DEFAULT_PORT, DEFAULT_PORT, false, 0, true),
+                classify(ip, DEFAULT_PORT, DEFAULT_PORT, false, 0, true, true),
                 Err(IneligibleReason::NotRoutable),
                 "{ip} should be NotRoutable"
             );
@@ -157,7 +181,7 @@ mod tests {
     #[test]
     fn non_default_port_is_rejected() {
         assert_eq!(
-            classify(routable_ip(), 1234, DEFAULT_PORT, false, 0, true),
+            classify(routable_ip(), 1234, DEFAULT_PORT, false, 0, true, true),
             Err(IneligibleReason::WrongPort)
         );
     }
@@ -165,7 +189,15 @@ mod tests {
     #[test]
     fn banned_ip_is_rejected() {
         assert_eq!(
-            classify(routable_ip(), DEFAULT_PORT, DEFAULT_PORT, true, 0, true),
+            classify(
+                routable_ip(),
+                DEFAULT_PORT,
+                DEFAULT_PORT,
+                true,
+                0,
+                true,
+                true
+            ),
             Err(IneligibleReason::Banned)
         );
     }
@@ -173,7 +205,15 @@ mod tests {
     #[test]
     fn misbehaving_peer_is_rejected() {
         assert_eq!(
-            classify(routable_ip(), DEFAULT_PORT, DEFAULT_PORT, false, 1, true),
+            classify(
+                routable_ip(),
+                DEFAULT_PORT,
+                DEFAULT_PORT,
+                false,
+                1,
+                true,
+                true
+            ),
             Err(IneligibleReason::Misbehaving)
         );
     }
@@ -181,8 +221,34 @@ mod tests {
     #[test]
     fn peer_without_recent_handshake_is_rejected() {
         assert_eq!(
-            classify(routable_ip(), DEFAULT_PORT, DEFAULT_PORT, false, 0, false),
+            classify(
+                routable_ip(),
+                DEFAULT_PORT,
+                DEFAULT_PORT,
+                false,
+                0,
+                false,
+                true
+            ),
             Err(IneligibleReason::NotRecentlyLive)
+        );
+    }
+
+    #[test]
+    fn recently_live_non_full_node_is_rejected() {
+        // A reachable, current, recently-live peer that does not advertise
+        // NODE_NETWORK still cannot serve the chain, so it is not servable.
+        assert_eq!(
+            classify(
+                routable_ip(),
+                DEFAULT_PORT,
+                DEFAULT_PORT,
+                false,
+                0,
+                true,
+                false
+            ),
+            Err(IneligibleReason::ServicesInsufficient)
         );
     }
 
@@ -197,6 +263,7 @@ mod tests {
                 DEFAULT_PORT,
                 true,
                 9,
+                false,
                 false
             ),
             Err(IneligibleReason::NotRoutable)
@@ -208,6 +275,6 @@ mod tests {
         let labels: Vec<&str> = IneligibleReason::ALL.iter().map(|r| r.label()).collect();
         let unique: HashSet<&str> = labels.iter().copied().collect();
         assert_eq!(labels.len(), unique.len(), "reason labels must be unique");
-        assert_eq!(unique.len(), 5, "all reasons must have a label");
+        assert_eq!(unique.len(), 6, "all reasons must have a label");
     }
 }

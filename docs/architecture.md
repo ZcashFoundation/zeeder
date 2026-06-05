@@ -242,6 +242,7 @@ let peers = match record_type {
 
 A peer is *servable* only if it is:
 - Recently live: zebra-network handshaked it within the liveness window (transitively current-version and reachable)
+- A full node: advertises the `NODE_NETWORK` service (zebra's handshake enforces the version floor but not services, so the seeder gates on it)
 - Routable (no loopback, unspecified, multicast)
 - On the network default port (usually 8233)
 - Not banned and not flagged for misbehavior
@@ -397,7 +398,7 @@ Implement per-IP rate limiting using `governor` crate:
 zebra-network's address book stores every peer it learns about, in every connection state, including `NeverAttemptedGossiped` addresses it has never contacted. `MetaAddr` carries no protocol version, so the seeder cannot filter served peers by version after the fact. The seeder also runs with no chain state, and zebra-network derives the handshake's minimum acceptable protocol version from the chain tip it is given.
 
 **Decision:**
-Serve a peer only when it is *servable*: recently handshaked (`was_recently_live`), routable, on the network default port, not banned, and not misbehaving. Implement the decision once in `server::eligibility`. Replace `NoChainTip` with a `SeederChainTip` pinned to the current network upgrade's activation height, so zebra-network's handshake enforces that upgrade's protocol-version floor and outdated peers never reach the address book.
+Serve a peer only when it is *servable*: recently handshaked (`was_recently_live`), advertising the full-node service (`NODE_NETWORK`), routable, on the network default port, not banned, and not misbehaving. Implement the decision once in `server::eligibility`. Replace `NoChainTip` with a `SeederChainTip` pinned to the current network upgrade's activation height, so zebra-network's handshake enforces that upgrade's protocol-version floor and outdated peers never reach the address book.
 
 **Rationale:**
 - A recent handshake transitively proves the peer passed the version floor and advertised the network service, so liveness and version-correctness are a single check.

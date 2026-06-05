@@ -17,7 +17,7 @@ use tokio::{
     time,
 };
 use tracing::{Instrument, info_span};
-use zebra_chain::chain_tip::ChainTip;
+use zebra_chain::{chain_tip::ChainTip, parameters::Network};
 
 use crate::{
     config::SeederConfig,
@@ -87,7 +87,7 @@ pub(crate) async fn spawn(config: SeederConfig) -> Result<()> {
 
     // Spawn the metrics logger task
     let address_book_monitor = address_book.clone();
-    let default_port = config.network.network.default_port();
+    let network = config.network.network.clone();
 
     let metrics_handle = tokio::spawn(async move {
         // Keep peer_set alive to ensure the network stack keeps running
@@ -110,7 +110,7 @@ pub(crate) async fn spawn(config: SeederConfig) -> Result<()> {
                     poisoned.into_inner()
                 }
             };
-            log_crawler_status(&book, default_port);
+            log_crawler_status(&book, &network);
         }
     });
 
@@ -121,7 +121,7 @@ pub(crate) async fn spawn(config: SeederConfig) -> Result<()> {
 
     // Spawn address cache updater - provides lock-free reads for DNS queries
     let latest_addresses =
-        address_cache::spawn(address_book.clone(), config.network.network.default_port());
+        address_cache::spawn(address_book.clone(), config.network.network.clone());
 
     let authority = SeederAuthority::new(
         latest_addresses,
@@ -184,14 +184,14 @@ pub(crate) async fn spawn(config: SeederConfig) -> Result<()> {
     Ok(())
 }
 
-fn log_crawler_status(book: &zebra_network::AddressBook, default_port: u16) {
+fn log_crawler_status(book: &zebra_network::AddressBook, network: &Network) {
     let now = chrono::Utc::now();
     let banned: HashSet<IpAddr> = book.bans().keys().copied().collect();
 
     let mut servable_v4 = 0usize;
     let mut servable_v6 = 0usize;
     for meta in book.peers() {
-        if eligibility::classify_peer(&meta, now, default_port, &banned).is_ok() {
+        if eligibility::classify_peer(&meta, now, &banned, network).is_ok() {
             if meta.addr().ip().is_ipv4() {
                 servable_v4 += 1;
             } else {
