@@ -1,7 +1,6 @@
-use std::{net::IpAddr, num::NonZeroU32, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use color_eyre::eyre::{Context, Result};
-use governor::{clock, state::keyed::DashMapStateStore, Quota, RateLimiter as GovernorLimiter};
 use hickory_proto::{
     op::{Header, ResponseCode},
     rr::{RData, Record, RecordType},
@@ -12,46 +11,23 @@ use hickory_server::{
     ServerFuture,
 };
 use metrics::{counter, gauge, histogram};
-use rand::{rng, seq::SliceRandom};
 use tokio::{
     net::{TcpListener, UdpSocket},
     sync::watch,
     time,
 };
 use tracing::{info_span, Instrument};
-use zebra_network::PeerSocketAddr;
 
-use crate::config::SeederConfig;
+use crate::{
+    config::SeederConfig,
+    server::{
+        address_cache::AddressRecords,
+        rate_limiter::{RateLimiter, RateLimiterExt},
+    },
+};
 
-type RateLimiter = GovernorLimiter<IpAddr, DashMapStateStore<IpAddr>, clock::DefaultClock>;
-
-/// The interval at which to prune the map of rate limits by IP of entries with an effectively fresh state.
-const RATE_LIMIT_PRUNE_INTERVAL: Duration = Duration::from_secs(5);
-
-trait RateLimiterExt {
-    fn new_map(queries_per_second: u32, burst_size: u32) -> Arc<Self>;
-    fn check(&self, key: IpAddr) -> bool;
-}
-
-impl RateLimiterExt for RateLimiter {
-    fn new_map(queries_per_second: u32, burst_size: u32) -> Arc<Self> {
-        let quota = Quota::per_second(NonZeroU32::new(queries_per_second).unwrap())
-            .allow_burst(NonZeroU32::new(burst_size).unwrap());
-        Arc::new(Self::dashmap(quota))
-    }
-
-    fn check(&self, key: IpAddr) -> bool {
-        self.check_key(&key).is_ok()
-    }
-}
-
-/// Cached address records for lock-free DNS response generation.
-/// Updated periodically by a background task to avoid lock contention.
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
-struct AddressRecords {
-    ipv4: Vec<PeerSocketAddr>,
-    ipv6: Vec<PeerSocketAddr>,
-}
+mod address_cache;
+mod rate_limiter;
 
 pub async fn spawn(config: SeederConfig) -> Result<()> {
     tracing::info!("Initializing zebra-network...");
@@ -115,34 +91,13 @@ pub async fn spawn(config: SeederConfig) -> Result<()> {
     });
 
     // Initialize rate limiter if configured
-    let (rate_limiter, prune_task) = if let Some(cfg) = &config.rate_limit {
-        tracing::info!(
-            "Rate limiting enabled: {} queries/sec per IP, burst size: {}",
-            cfg.queries_per_second,
-            cfg.burst_size
-        );
-
-        let limiter = RateLimiter::new_map(cfg.queries_per_second, cfg.burst_size);
-        let prune_task = {
-            let limiter = limiter.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(RATE_LIMIT_PRUNE_INTERVAL).await;
-                    limiter.retain_recent();
-                }
-            })
-        };
-
-        (Some(limiter), prune_task)
-    } else {
-        (None, tokio::spawn(std::future::pending()))
-    };
+    let (rate_limiter, prune_task) = rate_limiter::spawn(config.clone());
 
     tracing::info!("Initializing DNS server on {}", config.dns_listen_addr);
 
     // Spawn address cache updater - provides lock-free reads for DNS queries
     let latest_addresses =
-        spawn_addresses_cache_updater(address_book.clone(), config.network.network.default_port());
+        address_cache::spawn(address_book.clone(), config.network.network.default_port());
 
     let authority = SeederAuthority::new(
         latest_addresses,
@@ -241,81 +196,6 @@ fn log_crawler_status(book: &zebra_network::AddressBook, default_port: u16) {
     gauge!("seeder.peers.eligible", "addr_family" => "v6").set(eligible_v6 as f64);
 }
 
-/// Spawns a background task that periodically updates the cached address records.
-/// This eliminates lock contention during DNS query handling by providing a
-/// lock-free read path via the watch channel.
-fn spawn_addresses_cache_updater(
-    address_book: Arc<std::sync::Mutex<zebra_network::AddressBook>>,
-    default_port: u16,
-) -> watch::Receiver<AddressRecords> {
-    let (latest_addresses_sender, latest_addresses) = watch::channel(AddressRecords::default());
-
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-
-            let matched_peers: Vec<_> = match address_book.lock() {
-                Ok(guard) => guard
-                    .peers()
-                    .filter(|meta| {
-                        let ip = meta.addr().ip();
-
-                        // 1. Routability check
-                        let is_global =
-                            !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast();
-
-                        // 2. Port check
-                        let is_default_port = meta.addr().port() == default_port;
-
-                        is_global && is_default_port
-                    })
-                    .collect::<Vec<_>>(),
-                Err(poisoned) => {
-                    tracing::error!("Address book mutex poisoned during cache update, recovering");
-                    counter!("seeder.mutex_poisoning_total", "location" => "cache_updater")
-                        .increment(1);
-                    poisoned
-                        .into_inner()
-                        .peers()
-                        .filter(|meta| {
-                            let ip = meta.addr().ip();
-                            let is_global =
-                                !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast();
-                            let is_default_port = meta.addr().port() == default_port;
-                            is_global && is_default_port
-                        })
-                        .collect::<Vec<_>>()
-                }
-            };
-
-            // Separate into IPv4 and IPv6 pools
-            let mut ipv4: Vec<_> = matched_peers
-                .iter()
-                .filter(|meta| meta.addr().ip().is_ipv4())
-                .take(PEER_SELECTION_POOL_SIZE)
-                .collect();
-            let mut ipv6: Vec<_> = matched_peers
-                .iter()
-                .filter(|meta| meta.addr().ip().is_ipv6())
-                .take(PEER_SELECTION_POOL_SIZE)
-                .collect();
-
-            // Shuffle and take the configured maximum
-            ipv4.shuffle(&mut rng());
-            ipv4.truncate(MAX_DNS_RESPONSE_PEERS);
-            ipv6.shuffle(&mut rng());
-            ipv6.truncate(MAX_DNS_RESPONSE_PEERS);
-
-            let ipv4 = ipv4.iter().map(|peer| peer.addr()).collect::<Vec<_>>();
-            let ipv6 = ipv6.iter().map(|peer| peer.addr()).collect::<Vec<_>>();
-
-            let _ = latest_addresses_sender.send(AddressRecords { ipv4, ipv6 });
-        }
-    });
-
-    latest_addresses
-}
-
 #[derive(Clone)]
 pub struct SeederAuthority {
     latest_addresses: watch::Receiver<AddressRecords>,
@@ -323,10 +203,6 @@ pub struct SeederAuthority {
     dns_ttl: u32,
     rate_limiter: Option<Arc<RateLimiter>>,
 }
-
-// DNS response configuration
-const MAX_DNS_RESPONSE_PEERS: usize = 25;
-const PEER_SELECTION_POOL_SIZE: usize = 50; // Collect 2x peers for shuffle randomness
 
 impl SeederAuthority {
     fn new(
@@ -468,6 +344,8 @@ impl SeederAuthority {
 
 #[cfg(test)]
 mod tests {
+    use std::net::IpAddr;
+
     use super::*;
 
     // Rate Limiter Tests
@@ -576,24 +454,6 @@ mod tests {
         assert!(is_global_10);
         assert!(is_global_172);
         assert!(is_global_192);
-    }
-
-    // DNS Response Constants Tests
-    #[test]
-    fn test_dns_response_constants() {
-        // Verify the constants are reasonable
-        assert_eq!(
-            MAX_DNS_RESPONSE_PEERS, 25,
-            "Should return max 25 peers per query"
-        );
-        assert_eq!(
-            PEER_SELECTION_POOL_SIZE, 50,
-            "Should collect 50 peers for randomization"
-        );
-        assert!(
-            PEER_SELECTION_POOL_SIZE >= MAX_DNS_RESPONSE_PEERS * 2,
-            "Pool should be at least 2x response size for good randomization"
-        );
     }
 
     // DNS Integration Tests
