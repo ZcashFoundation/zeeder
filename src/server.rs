@@ -283,53 +283,49 @@ impl SeederAuthority {
 
             // Read from the cached addresses - no mutex lock needed!
             // The cache is updated by a background task every 5 seconds.
-            let matched_peers = match record_type {
-                RecordType::A => self.latest_addresses.borrow().ipv4.clone(),
-                RecordType::AAAA => self.latest_addresses.borrow().ipv6.clone(),
-                _ => Vec::new(),
+            let response_data = match record_type {
+                RecordType::A => Some(("A", self.latest_addresses.borrow().ipv4.clone())),
+                RecordType::AAAA => Some(("AAAA", self.latest_addresses.borrow().ipv6.clone())),
+                RecordType::TXT => {
+                    let AddressRecords { ipv4, ipv6 } = self.latest_addresses.borrow().clone();
+                    Some(("TXT", ipv4.into_iter().chain(ipv6.into_iter()).collect()))
+                }
+                _ => None,
             };
 
-            histogram!("seeder.dns.response_peers").record(matched_peers.len() as f64);
+            if let Some((type_label, matched_peers)) = response_data {
+                histogram!("seeder.dns.response_peers").record(matched_peers.len() as f64);
 
-            for addr in matched_peers {
-                let rdata = match addr.ip() {
-                    std::net::IpAddr::V4(ipv4) => RData::A(hickory_proto::rr::rdata::A(ipv4)),
-                    std::net::IpAddr::V6(ipv6) => RData::AAAA(hickory_proto::rr::rdata::AAAA(ipv6)),
-                };
-
-                let record = Record::from_rdata(name.clone().into(), self.dns_ttl, rdata);
-                records.push(record);
-            }
-
-            match record_type {
-                RecordType::A | RecordType::AAAA => {
-                    // Record metric by type
-                    let type_label = match record_type {
-                        RecordType::A => "A",
-                        RecordType::AAAA => "AAAA",
-                        _ => "other",
+                for addr in matched_peers {
+                    let rdata = match addr.ip() {
+                        std::net::IpAddr::V4(ipv4) => RData::A(hickory_proto::rr::rdata::A(ipv4)),
+                        std::net::IpAddr::V6(ipv6) => {
+                            RData::AAAA(hickory_proto::rr::rdata::AAAA(ipv6))
+                        }
                     };
-                    counter!("seeder.dns.queries_total", &[("record_type", type_label)])
-                        .increment(1);
 
-                    let response = builder.build(header, records.iter(), &[], &[], &[]);
-                    return response_handle
-                        .send_response(response)
-                        .await
-                        .inspect_err(|e| {
-                            tracing::warn!("Failed to send DNS response: {}", e);
-                            counter!("seeder.dns.errors_total").increment(1);
-                        })
-                        .unwrap_or_else(|_| {
-                            ResponseInfo::from(header) // fallback
-                        });
+                    let record = Record::from_rdata(name.clone().into(), self.dns_ttl, rdata);
+                    records.push(record);
                 }
-                _ => {
-                    // For NS, SOA, etc, we might want to return something else or Refused.
-                    // Returning empty NOERROR or NXDOMAIN?
-                    // Let's return NOERROR empty for now.
-                }
+
+                counter!("seeder.dns.queries_total", &[("record_type", type_label)]).increment(1);
+
+                let response = builder.build(header, records.iter(), &[], &[], &[]);
+                return response_handle
+                    .send_response(response)
+                    .await
+                    .inspect_err(|e| {
+                        tracing::warn!("Failed to send DNS response: {}", e);
+                        counter!("seeder.dns.errors_total").increment(1);
+                    })
+                    .unwrap_or_else(|_| {
+                        ResponseInfo::from(header) // fallback
+                    });
             }
+        } else {
+            // For NS, SOA, etc, we might want to return something else or Refused.
+            // Returning empty NOERROR or NXDOMAIN?
+            // Let's return NOERROR empty for now.
         }
 
         // Default response (SERVFAIL or just empty user defined)
