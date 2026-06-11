@@ -85,7 +85,7 @@ sequenceDiagram
     loop Every 5 seconds
         CacheUpdater->>AddressBook: Lock & read peers
         AddressBook-->>CacheUpdater: All peers
-        CacheUpdater->>CacheUpdater: Classify (recently-live, routable, default port, not banned)
+        CacheUpdater->>CacheUpdater: Classify (recently-live, routable, default port, full node)
         CacheUpdater->>CacheUpdater: Separate IPv4/IPv6
         CacheUpdater->>CacheUpdater: Shuffle & take 25 each
         CacheUpdater->>AddressCache: Update via watch channel
@@ -245,7 +245,8 @@ A peer is *servable* only if it is:
 - A full node: advertises the `NODE_NETWORK` service (zebra's handshake enforces the version floor but not services, so the seeder gates on it)
 - Routable (no loopback, unspecified, multicast)
 - On the network default port (usually 8233)
-- Not banned and not flagged for misbehavior
+
+Peer quality beyond that (banning, misbehavior scoring) stays with zebra-network. A peer that reaches the ban threshold is removed from the address book in the same update that bans it, so it never reaches this filter; a peer with a sub-ban misbehavior score is one zebra still trusts enough to keep and connect to, so the seeder serves it too.
 
 Servable peers are then separated by address family (IPv4/IPv6), shuffled, and capped at 25.
 
@@ -398,11 +399,12 @@ Implement per-IP rate limiting using `governor` crate:
 zebra-network's address book stores every peer it learns about, in every connection state, including `NeverAttemptedGossiped` addresses it has never contacted. `MetaAddr` carries no protocol version, so the seeder cannot filter served peers by version after the fact. The seeder also runs with no chain state, and zebra-network derives the handshake's minimum acceptable protocol version from the chain tip it is given.
 
 **Decision:**
-Serve a peer only when it is *servable*: recently handshaked (`was_recently_live`), advertising the full-node service (`NODE_NETWORK`), routable, on the network default port, not banned, and not misbehaving. Implement the decision once in `server::eligibility`. Replace `NoChainTip` with a `SeederChainTip` pinned to the current network upgrade's activation height, so zebra-network's handshake enforces that upgrade's protocol-version floor and outdated peers never reach the address book.
+Serve a peer only when it is *servable*: recently handshaked (`was_recently_live`), advertising the full-node service (`NODE_NETWORK`), routable, and on the network default port. Implement the decision once in `server::eligibility`. Leave banning and misbehavior scoring to zebra-network, which removes a banned peer from the address book before the seeder classifies it. Replace `NoChainTip` with a `SeederChainTip` pinned to the current network upgrade's activation height, so zebra-network's handshake enforces that upgrade's protocol-version floor and outdated peers never reach the address book.
 
 **Rationale:**
 - A recent handshake transitively proves the peer passed the version floor and advertised the network service, so liveness and version-correctness are a single check.
 - The floor is derived from zebra-chain's activation table, so it tracks future upgrades on a dependency bump rather than via a hardcoded constant.
+- The seeder only enforces what DNS structurally requires (routable IP, default port, address family). Peer quality (banning, misbehavior) stays with zebra-network, which already owns it; the seeder serving a sub-ban peer matches what zebra itself is willing to connect to.
 - No second peer database and no active probing: zebra-network already crawls, handshakes, and tracks liveness (honoring ADR 001).
 
 **Consequences:**

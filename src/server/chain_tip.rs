@@ -1,16 +1,14 @@
 //! A fixed chain tip that pins zebra-network's peer protocol-version floor.
 //!
-//! The seeder keeps no block state, but zebra-network derives the minimum
-//! protocol version it accepts from a peer during the handshake
-//! (`Version::min_remote_for_height`) from the chain tip it is given. With
-//! [`NoChainTip`](zebra_chain::chain_tip::NoChainTip) that floor collapses to
-//! the static pre-NU6 minimum, so the handshake accepts peers several upgrades
-//! behind, and those peers then get served.
-//!
+//! zebra-network derives the minimum protocol version it accepts during a
+//! handshake from the chain tip's height (`Version::min_remote_for_height`).
 //! [`SeederChainTip`] reports the activation height of the network's current
-//! (highest-activated) upgrade instead, so zebra-network rejects any peer
-//! advertising a protocol version below that upgrade's minimum. Such peers never
-//! reach the address book, so the eligibility filter never sees them.
+//! upgrade, so the handshake rejects peers below that upgrade's floor (NU6.2,
+//! `170150`, on Mainnet) and they never reach the address book.
+//!
+//! Only `best_tip_height` feeds that floor; the networking path reads no other
+//! [`ChainTip`] accessor, so the rest return `None` and `best_tip_changed`
+//! pends forever.
 
 use std::{future, sync::Arc};
 
@@ -68,8 +66,7 @@ impl ChainTip for SeederChainTip {
         Arc::new([])
     }
 
-    /// The tip is fixed, so a change is never signalled. Resolving here would
-    /// make zebra-network busy-loop recomputing the unchanged minimum version.
+    /// The tip is fixed, so a change is never signalled.
     async fn best_tip_changed(&mut self) -> Result<(), BoxError> {
         future::pending().await
     }
@@ -94,16 +91,13 @@ mod tests {
 
     #[test]
     fn mainnet_floor_is_the_current_network_upgrade() {
-        // Pins the expected Mainnet floor so a zebra bump that activates the
-        // next upgrade fails here and forces a conscious review.
-        // Currently NU6.2 (protocol version 170_150).
+        // Pins the floor so a zebra bump that activates the next upgrade trips here.
         assert_eq!(version_floor(&Network::Mainnet), Version(170_150));
     }
 
     #[test]
     fn chain_tip_raises_floor_above_no_chain_tip_fallback() {
-        // The whole point of the fixed tip: it must lift the handshake floor
-        // above the static pre-NU6 minimum that NoChainTip would leave in place.
+        // The fixed tip must lift the floor above the NoChainTip fallback.
         for network in [Network::Mainnet, Network::new_default_testnet()] {
             assert!(
                 version_floor(&network) > no_chain_tip_floor(&network),

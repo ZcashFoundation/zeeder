@@ -1,4 +1,4 @@
-use std::{collections::HashSet, net::IpAddr, sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use color_eyre::eyre::{Context, Result};
 use hickory_proto::{
@@ -186,12 +186,11 @@ pub(crate) async fn spawn(config: SeederConfig) -> Result<()> {
 
 fn log_crawler_status(book: &zebra_network::AddressBook, network: &Network) {
     let now = chrono::Utc::now();
-    let banned: HashSet<IpAddr> = book.bans().keys().copied().collect();
 
     let mut servable_v4 = 0usize;
     let mut servable_v6 = 0usize;
     for meta in book.peers() {
-        if eligibility::classify_peer(&meta, now, &banned, network).is_ok() {
+        if eligibility::classify_peer(&meta, now, network).is_ok() {
             if meta.addr().ip().is_ipv4() {
                 servable_v4 += 1;
             } else {

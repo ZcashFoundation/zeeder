@@ -1,9 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    net::IpAddr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use chrono::Utc;
 use metrics::{counter, gauge};
@@ -75,14 +70,13 @@ pub(crate) fn spawn(
 )]
 fn servable_records(book: &AddressBook, network: &Network) -> AddressRecords {
     let now = Utc::now();
-    let banned: HashSet<IpAddr> = book.bans().keys().copied().collect();
 
     let mut ipv4 = Vec::new();
     let mut ipv6 = Vec::new();
     let mut ineligible: HashMap<IneligibleReason, usize> = HashMap::new();
 
     for meta in book.peers() {
-        match classify_peer(&meta, now, &banned, network) {
+        match classify_peer(&meta, now, network) {
             Ok(()) => {
                 let addr = meta.addr();
                 if addr.ip().is_ipv4() {
@@ -118,6 +112,7 @@ mod tests {
 
     use tracing::Span;
     use zebra_chain::parameters::Network;
+    use zebra_network::constants::MAX_PEER_MISBEHAVIOR_SCORE;
     use zebra_network::types::{MetaAddr, PeerServices};
 
     use super::*;
@@ -164,9 +159,6 @@ mod tests {
         assert_eq!(served, vec![IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))]);
     }
 
-    /// A recently-handshaked peer that does not advertise NODE_NETWORK is not
-    /// servable: zebra's handshake enforces the version floor but not the
-    /// full-node service, so the seeder must gate on it.
     #[test]
     fn recently_connected_non_full_node_is_not_servable() {
         let mut book = empty_book();
@@ -198,6 +190,28 @@ mod tests {
         assert!(
             records.ipv4.is_empty(),
             "peers on a non-default port must not be served"
+        );
+    }
+
+    /// zebra-network removes a peer from the book when it bans it, so the seeder
+    /// never has to filter banned IPs itself.
+    #[test]
+    fn banned_peers_are_removed_from_the_book() {
+        let mut book = empty_book();
+        let addr = peer([1, 2, 3, 4], 8233);
+        book.update(MetaAddr::new_connected(
+            addr,
+            &PeerServices::NODE_NETWORK,
+            false,
+        ));
+        assert_eq!(book.len(), 1, "the peer starts in the book");
+
+        book.update(MetaAddr::new_misbehavior(addr, MAX_PEER_MISBEHAVIOR_SCORE));
+
+        assert_eq!(book.len(), 0, "a banned peer is removed from the book");
+        assert!(
+            book.bans().contains_key(&addr.ip()),
+            "the banned ip is recorded in the ban set"
         );
     }
 }
