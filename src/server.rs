@@ -487,11 +487,11 @@ mod tests {
         Ok(resolver)
     }
 
-    /// A watch receiver pre-loaded with `records` for DNS-serving tests.
+    /// A watch receiver seeded with `records` for DNS-serving tests. The sender
+    /// is dropped; a closed watch channel still serves the seeded value via
+    /// `borrow()`, which is all the read path uses.
     fn test_address_receiver(records: AddressRecords) -> watch::Receiver<AddressRecords> {
-        let (sender, receiver) = watch::channel(records);
-        // Leak the sender so the receiver stays open for the test's lifetime.
-        std::mem::forget(sender);
+        let (_sender, receiver) = watch::channel(records);
         receiver
     }
 
@@ -508,11 +508,11 @@ mod tests {
         let resolver = create_test_resolver(server_addr)?;
 
         // The query should complete even with no peers; an empty answer is fine.
-        let result = resolver
+        let lookup = resolver
             .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::A)
             .await;
 
-        match result {
+        match lookup {
             Ok(response) => {
                 for record in response.answers() {
                     if let Some(ip) = record.data.ip_addr() {
@@ -545,10 +545,10 @@ mod tests {
         let (server_addr, handle) = create_test_dns_server(authority).await?;
         let resolver = create_test_resolver(server_addr)?;
 
-        let result = resolver
+        let lookup = resolver
             .lookup("wrong.domain.test", hickory_proto::rr::RecordType::A)
             .await;
-        assert!(result.is_err(), "query for wrong domain should fail");
+        assert!(lookup.is_err(), "query for wrong domain should fail");
 
         handle.abort();
         Ok(())
@@ -576,12 +576,12 @@ mod tests {
             .await;
 
         // The third is dropped, so it times out (or errors).
-        let result = tokio::time::timeout(
+        let timeout_outcome = tokio::time::timeout(
             Duration::from_millis(500),
             resolver.lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::A),
         )
         .await;
-        let was_dropped = match result {
+        let was_dropped = match timeout_outcome {
             Err(_elapsed) => true,
             Ok(lookup) => lookup.is_err(),
         };
@@ -603,11 +603,11 @@ mod tests {
         let (server_addr, handle) = create_test_dns_server(authority).await?;
         let resolver = create_test_resolver(server_addr)?;
 
-        let result = resolver
+        let lookup = resolver
             .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::AAAA)
             .await;
 
-        match result {
+        match lookup {
             Ok(response) => {
                 for record in response.answers() {
                     if let Some(ip) = record.data.ip_addr() {

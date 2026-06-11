@@ -11,7 +11,7 @@ use crate::config::SeederConfig;
 pub(crate) type RateLimiter =
     GovernorLimiter<IpAddr, DashMapStateStore<IpAddr>, clock::DefaultClock>;
 
-/// The interval at which to prune the map of rate limits by IP of entries with an effectively fresh state.
+/// How often stale per-IP rate-limit entries are pruned from the map.
 const RATE_LIMIT_PRUNE_INTERVAL: Duration = Duration::from_secs(5);
 
 pub(crate) trait RateLimiterExt {
