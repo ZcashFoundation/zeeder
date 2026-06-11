@@ -1,0 +1,43 @@
+msrv = "1.95"
+
+cognitive-complexity-threshold = 25
+type-complexity-threshold = 250
+too-many-arguments-threshold = 7
+too-many-lines-threshold = 100
+
+allow-dbg-in-tests = false
+allow-expect-in-tests = false
+allow-unwrap-in-tests = false
+allow-print-in-tests = false
+
+avoid-breaking-exported-api = true
+check-private-items = true
+
+doc-valid-idents = [
+  "Zcash",
+  "Zebra",
+  "Hickory",
+  "NoChainTip",
+  "SeederChainTip",
+  "MetaAddr",
+  "AddressBook",
+  "IPv4",
+  "IPv6",
+  "NU6",
+  "NU7",
+  "DNS",
+  "RUST_LOG",
+  "NODE_NETWORK",
+  "..",
+]
+
+disallowed-names = [
+  "data",
+  "info",
+  "item",
+  "result",
+  "stuff",
+  "thing",
+  "tmp",
+  "value",
+]
