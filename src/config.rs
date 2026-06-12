@@ -1,9 +1,9 @@
 //! Layered configuration for the seeder: defaults, then an optional TOML file,
 //! then `ZEEDER__*` environment variables (each layer overriding the last).
 
-use color_eyre::eyre::{Context, Result, eyre};
+use color_eyre::eyre::{Context, Result, ensure, eyre};
 use config::{Config, Environment, File};
-use hickory_proto::rr::Name;
+use hickory_proto::rr::{LowerName, Name};
 use serde::{Deserialize, Serialize};
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -86,6 +86,12 @@ pub(crate) struct DnsConfig {
     /// The domain name the seeder is authoritative for.
     pub(crate) domain: String,
 
+    /// The authoritative nameserver for `domain`.
+    ///
+    /// This must be outside `domain` because Zeeder does not serve address
+    /// records for nameserver hostnames.
+    pub(crate) nameserver: String,
+
     /// DNS response TTL (time to live) in seconds.
     ///
     /// Controls how long clients cache DNS responses. Lower values mean fresher
@@ -99,6 +105,7 @@ impl Default for DnsConfig {
         Self {
             listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 53),
             domain: "mainnet.seeder.example.com".to_string(),
+            nameserver: "ns.seeder.example.com".to_string(),
             ttl: 600,
         }
     }
@@ -106,11 +113,31 @@ impl Default for DnsConfig {
 
 impl DnsConfig {
     fn validate(&self) -> Result<()> {
-        Name::from_ascii(&self.domain)
-            .wrap_err_with(|| format!("dns.domain must be a valid DNS name: {:?}", self.domain))?;
+        let domain = parse_dns_name("dns.domain", &self.domain)?;
+        let nameserver = parse_dns_name("dns.nameserver", &self.nameserver)?;
+        ensure_nameserver_is_out_of_zone(&domain, &nameserver)?;
 
         Ok(())
     }
+}
+
+fn parse_dns_name(field: &str, name_text: &str) -> Result<Name> {
+    let mut name = Name::from_ascii(name_text)
+        .wrap_err_with(|| format!("{field} must be a valid DNS name: {name_text:?}"))?;
+    name.set_fqdn(true);
+    Ok(name)
+}
+
+fn ensure_nameserver_is_out_of_zone(domain: &Name, nameserver: &Name) -> Result<()> {
+    let domain = LowerName::from(domain.clone());
+    let nameserver = LowerName::from(nameserver.clone());
+
+    ensure!(
+        !domain.zone_of(&nameserver),
+        "dns.nameserver must be outside dns.domain because Zeeder does not serve address records for nameserver hostnames"
+    );
+
+    Ok(())
 }
 
 /// Configuration for Prometheus metrics.
@@ -242,6 +269,7 @@ mod tests {
         let config = SeederConfig::default();
         assert_eq!(config.dns.listen_addr.to_string(), "0.0.0.0:53");
         assert_eq!(config.dns.domain, "mainnet.seeder.example.com");
+        assert_eq!(config.dns.nameserver, "ns.seeder.example.com");
         assert_eq!(config.dns.ttl, 600);
     }
 
@@ -278,8 +306,9 @@ mod tests {
         let operations_docs = include_str!("../docs/operations.md");
         let expected_rows = [
             "| `dns.listen_addr` | `ZEEDER__DNS__LISTEN_ADDR` | `0.0.0.0:53` | DNS server address and port |",
-            "| `dns.ttl` | `ZEEDER__DNS__TTL` | `600` | DNS response TTL in seconds |",
             "| `dns.domain` | `ZEEDER__DNS__DOMAIN` | `mainnet.seeder.example.com` | Authoritative domain |",
+            "| `dns.nameserver` | `ZEEDER__DNS__NAMESERVER` | `ns.seeder.example.com` | Out-of-zone authoritative nameserver |",
+            "| `dns.ttl` | `ZEEDER__DNS__TTL` | `600` | DNS response TTL in seconds |",
             "| `crawler.network` | `ZEEDER__CRAWLER__NETWORK` | `Mainnet` | Zcash network (`Mainnet` or `Testnet`) |",
             "| `rate_limit.queries_per_second` | `ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP; must be greater than 0 |",
             "| `rate_limit.burst_size` | `ZEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity; must be greater than 0 |",
@@ -307,8 +336,9 @@ mod tests {
         let expected_keys = [
             "ZEEDER__CRAWLER__NETWORK",
             "ZEEDER__DNS__LISTEN_ADDR",
-            "ZEEDER__DNS__TTL",
             "ZEEDER__DNS__DOMAIN",
+            "ZEEDER__DNS__NAMESERVER",
+            "ZEEDER__DNS__TTL",
             "ZEEDER__METRICS__ENDPOINT_ADDR",
             "ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND",
             "ZEEDER__RATE_LIMIT__BURST_SIZE",
@@ -327,8 +357,9 @@ mod tests {
 
         assert_eq!(config.crawler.network, CrawlerNetwork::Testnet);
         assert_eq!(config.dns.listen_addr.to_string(), "0.0.0.0:1053");
-        assert_eq!(config.dns.ttl, 600);
         assert_eq!(config.dns.domain, "testnet.seeder.example.com");
+        assert_eq!(config.dns.nameserver, "ns.seeder.example.com");
+        assert_eq!(config.dns.ttl, 600);
         assert_eq!(
             config
                 .metrics
@@ -375,6 +406,7 @@ network = "Testnet"
 [dns]
 listen_addr = "127.0.0.1:1053"
 domain = "testnet.seeder.example.com"
+nameserver = "ns.seeder.example.com"
 ttl = 300
 
 [rate_limit]
@@ -391,6 +423,7 @@ endpoint_addr = "127.0.0.1:9999"
                 ("ZEEDER__CRAWLER__NETWORK", None::<&str>),
                 ("ZEEDER__DNS__DOMAIN", None),
                 ("ZEEDER__DNS__LISTEN_ADDR", None),
+                ("ZEEDER__DNS__NAMESERVER", None),
                 ("ZEEDER__DNS__TTL", None),
                 ("ZEEDER__DNS_TTL", None),
                 ("ZEEDER__DNS__TTTL", None),
@@ -408,6 +441,7 @@ endpoint_addr = "127.0.0.1:9999"
         assert_eq!(config.crawler.network, CrawlerNetwork::Testnet);
         assert_eq!(config.dns.listen_addr.to_string(), "127.0.0.1:1053");
         assert_eq!(config.dns.domain, "testnet.seeder.example.com");
+        assert_eq!(config.dns.nameserver, "ns.seeder.example.com");
         assert_eq!(config.dns.ttl, 300);
         assert_eq!(
             config
@@ -426,10 +460,15 @@ endpoint_addr = "127.0.0.1:9999"
 
     #[test]
     fn test_env_overrides() -> TestResult {
-        let config = temp_env::with_var("ZEEDER__DNS__DOMAIN", Some("test.example.com"), || {
-            SeederConfig::load_with_env(None)
-        })?;
+        let config = temp_env::with_vars(
+            [
+                ("ZEEDER__DNS__DOMAIN", Some("test.example.com")),
+                ("ZEEDER__DNS__NAMESERVER", Some("ns.example.com")),
+            ],
+            || SeederConfig::load_with_env(None),
+        )?;
         assert_eq!(config.dns.domain, "test.example.com");
+        assert_eq!(config.dns.nameserver, "ns.example.com");
         Ok(())
     }
 
@@ -480,6 +519,34 @@ endpoint_addr = "127.0.0.1:9999"
         });
 
         assert!(config.is_err(), "invalid DNS domain should fail");
+    }
+
+    #[test]
+    fn invalid_dns_nameserver_is_rejected() {
+        let config = temp_env::with_var("ZEEDER__DNS__NAMESERVER", Some("not a domain"), || {
+            SeederConfig::load_with_env(None)
+        });
+
+        assert!(config.is_err(), "invalid DNS nameserver should fail");
+    }
+
+    #[test]
+    fn in_zone_dns_nameserver_is_rejected() {
+        let config = temp_env::with_vars(
+            [
+                ("ZEEDER__DNS__DOMAIN", Some("testnet.seeder.example.com")),
+                (
+                    "ZEEDER__DNS__NAMESERVER",
+                    Some("ns.testnet.seeder.example.com"),
+                ),
+            ],
+            || SeederConfig::load_with_env(None),
+        );
+
+        assert!(
+            config.is_err(),
+            "in-zone DNS nameserver should fail because Zeeder does not serve glue"
+        );
     }
 
     #[test]

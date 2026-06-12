@@ -2,7 +2,7 @@
 
 use std::net::IpAddr;
 
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, ensure};
 use hickory_proto::{
     op::{Header, HeaderCounts, Metadata, ResponseCode},
     rr::{
@@ -58,14 +58,20 @@ struct ZoneRecords {
 }
 
 impl SeedZone {
-    /// Parse the configured seed domain and synthesize static zone metadata.
-    pub(crate) fn new(seed_domain: &str, dns_ttl: u32) -> Result<Self> {
-        let seed_domain = Name::from_ascii(seed_domain)
-            .wrap_err_with(|| format!("invalid seed domain `{seed_domain}`"))?;
-        let records = ZoneRecords::new(seed_domain.clone(), dns_ttl)?;
+    /// Parse the configured seed domain and static zone metadata.
+    pub(crate) fn new(seed_domain: &str, nameserver: &str, dns_ttl: u32) -> Result<Self> {
+        let seed_domain = parse_absolute_name("seed domain", seed_domain)?;
+        let nameserver_name = parse_absolute_name("nameserver", nameserver)?;
+        let seed_domain_lower = LowerName::from(seed_domain.clone());
+        let nameserver_lower = LowerName::from(nameserver_name.clone());
+        ensure!(
+            !seed_domain_lower.zone_of(&nameserver_lower),
+            "nameserver must be outside the seed domain because Zeeder does not serve address records for nameserver hostnames"
+        );
+        let records = ZoneRecords::new(seed_domain, nameserver_name, dns_ttl)?;
 
         Ok(Self {
-            domain: LowerName::from(seed_domain),
+            domain: seed_domain_lower,
             records,
             ttl: dns_ttl,
         })
@@ -98,13 +104,16 @@ impl SeedZone {
     }
 }
 
+fn parse_absolute_name(field: &str, name_text: &str) -> Result<Name> {
+    let mut name =
+        Name::from_ascii(name_text).wrap_err_with(|| format!("invalid {field} `{name_text}`"))?;
+    name.set_fqdn(true);
+    Ok(name)
+}
+
 impl ZoneRecords {
-    fn new(seed_domain: Name, dns_ttl: u32) -> Result<Self> {
+    fn new(seed_domain: Name, nameserver_name: Name, dns_ttl: u32) -> Result<Self> {
         let seed_domain_ascii = seed_domain.to_ascii();
-        let nameserver_name =
-            Name::from_ascii(format!("ns.{seed_domain_ascii}")).wrap_err_with(|| {
-                format!("invalid synthesized nameserver for `{seed_domain_ascii}`")
-            })?;
         let responsible_mailbox = Name::from_ascii(format!("hostmaster.{seed_domain_ascii}"))
             .wrap_err_with(|| {
                 format!("invalid synthesized SOA mailbox for `{seed_domain_ascii}`")
@@ -421,7 +430,7 @@ mod tests {
     }
 
     fn seed_zone(seed_domain: &str, dns_ttl: u32) -> color_eyre::Result<SeedZone> {
-        SeedZone::new(seed_domain, dns_ttl)
+        SeedZone::new(seed_domain, "ns.seeder.test", dns_ttl)
     }
 
     fn request_handler(
@@ -660,24 +669,53 @@ mod tests {
 
     #[test]
     fn rejects_invalid_seed_domain() {
-        let result = SeedZone::new("not a domain", 600);
+        let result = SeedZone::new("not a domain", "ns.seeder.test", 600);
 
         assert!(result.is_err(), "invalid seed domain should fail startup");
     }
 
     #[test]
-    fn synthesizes_zone_records_for_seed_domain() -> TestResult {
-        let seed_zone = SeedZone::new("mainnet.seeder.test", 300)?;
+    fn rejects_invalid_nameserver() {
+        let result = SeedZone::new("mainnet.seeder.test", "not a domain", 600);
 
-        assert_eq!(seed_zone.records.soa.name.to_ascii(), "mainnet.seeder.test");
+        assert!(result.is_err(), "invalid nameserver should fail startup");
+    }
+
+    #[test]
+    fn rejects_in_zone_nameserver() {
+        let result = SeedZone::new("mainnet.seeder.test", "ns.mainnet.seeder.test", 600);
+
+        assert!(
+            result.is_err(),
+            "in-zone nameserver should fail because Zeeder does not serve glue"
+        );
+    }
+
+    #[test]
+    fn builds_zone_records_for_seed_domain() -> TestResult {
+        let seed_zone = SeedZone::new("mainnet.seeder.test", "ns.seeder.test", 300)?;
+        let expected_domain = LowerName::from(Name::from_ascii("mainnet.seeder.test.")?);
+        let expected_nameserver = LowerName::from(Name::from_ascii("ns.seeder.test.")?);
+
         assert_eq!(
-            seed_zone.records.nameserver.name.to_ascii(),
-            "mainnet.seeder.test"
+            LowerName::from(seed_zone.records.soa.name.clone()),
+            expected_domain
+        );
+        assert_eq!(
+            LowerName::from(seed_zone.records.nameserver.name.clone()),
+            expected_domain
         );
         assert_eq!(seed_zone.records.soa.ttl, 300);
         assert_eq!(seed_zone.records.nameserver.ttl, 300);
-        assert!(matches!(&seed_zone.records.soa.data, RData::SOA(_)));
-        assert!(matches!(&seed_zone.records.nameserver.data, RData::NS(_)));
+        let RData::SOA(soa) = &seed_zone.records.soa.data else {
+            return Err(color_eyre::eyre::eyre!("expected SOA record"));
+        };
+        assert_eq!(LowerName::from(soa.mname.clone()), expected_nameserver);
+
+        let RData::NS(ns) = &seed_zone.records.nameserver.data else {
+            return Err(color_eyre::eyre::eyre!("expected NS record"));
+        };
+        assert_eq!(LowerName::from(ns.0.clone()), expected_nameserver);
         Ok(())
     }
 
@@ -787,12 +825,12 @@ mod tests {
 
         let ns = required_answer_message(&request_handler, "mainnet.seeder.test", RecordType::NS)
             .await?;
-        assert!(
-            ns.answers
-                .iter()
-                .any(|record| matches!(&record.data, RData::NS(_))),
-            "NS query should return an NS record"
-        );
+        assert_eq!(ns.answers.len(), 1, "NS query should return one record");
+        let expected_nameserver = LowerName::from(Name::from_ascii("ns.seeder.test.")?);
+        let RData::NS(ns) = &ns.answers[0].data else {
+            return Err(color_eyre::eyre::eyre!("expected NS record"));
+        };
+        assert_eq!(LowerName::from(ns.0.clone()), expected_nameserver);
 
         let no_data =
             required_answer_message(&request_handler, "node.mainnet.seeder.test", RecordType::A)

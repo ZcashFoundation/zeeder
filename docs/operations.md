@@ -19,6 +19,7 @@ Prefix all variables with `ZEEDER__` and use double underscores for nesting. Zee
 # Core settings
 ZEEDER__DNS__LISTEN_ADDR="0.0.0.0:53"
 ZEEDER__DNS__DOMAIN="mainnet.seeder.example.com"
+ZEEDER__DNS__NAMESERVER="ns.seeder.example.com"
 ZEEDER__DNS__TTL="600"
 
 # Crawler
@@ -52,6 +53,7 @@ Example `config.toml`:
 [dns]
 listen_addr = "0.0.0.0:53"
 domain = "mainnet.seeder.example.com"
+nameserver = "ns.seeder.example.com"
 ttl = 600
 
 [crawler]
@@ -72,8 +74,9 @@ Use with: `zeeder start --config config.toml`
 | Parameter | Environment Variable | Default | Description |
 |-----------|---------------------|---------|-------------|
 | `dns.listen_addr` | `ZEEDER__DNS__LISTEN_ADDR` | `0.0.0.0:53` | DNS server address and port |
-| `dns.ttl` | `ZEEDER__DNS__TTL` | `600` | DNS response TTL in seconds |
 | `dns.domain` | `ZEEDER__DNS__DOMAIN` | `mainnet.seeder.example.com` | Authoritative domain |
+| `dns.nameserver` | `ZEEDER__DNS__NAMESERVER` | `ns.seeder.example.com` | Out-of-zone authoritative nameserver |
+| `dns.ttl` | `ZEEDER__DNS__TTL` | `600` | DNS response TTL in seconds |
 | `crawler.network` | `ZEEDER__CRAWLER__NETWORK` | `Mainnet` | Zcash network (`Mainnet` or `Testnet`) |
 | `rate_limit.queries_per_second` | `ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP; must be greater than 0 |
 | `rate_limit.burst_size` | `ZEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity; must be greater than 0 |
@@ -83,7 +86,7 @@ Use with: `zeeder start --config config.toml`
 
 ### Prerequisites
 
-- **DNS delegation**: Your configured `dns.domain` must have NS records pointing to your server
+- **DNS delegation**: Your configured `dns.domain` must delegate to `dns.nameserver`, and `dns.nameserver` must resolve outside `dns.domain`
 - **Port 53**: UDP (and optionally TCP) access required
 - **Outbound connectivity**: Access to the Zcash P2P network (port 8233 for mainnet, 18233 for testnet)
 - **Crawler listener**: The crawler binds `[::]:8233` on mainnet and `[::]:18233` on testnet. Expose that listener only if you want the seeder to accept inbound P2P connections.
@@ -109,15 +112,16 @@ services:
       - "9999:9999/tcp"  # metrics
     environment:
       ZEEDER__DNS__DOMAIN: "mainnet.seeder.example.com"
+      ZEEDER__DNS__NAMESERVER: "ns.seeder.example.com"
       ZEEDER__CRAWLER__NETWORK: "Mainnet"
       ZEEDER__DNS__LISTEN_ADDR: "0.0.0.0:1053"
       ZEEDER__DNS__TTL: "600"
       ZEEDER__METRICS__ENDPOINT_ADDR: "0.0.0.0:9999"
     volumes:
-      - seeder-cache:/cache
+      - zeeder-cache:/cache
 
 volumes:
-  seeder-cache:
+  zeeder-cache:
 ```
 
 **3. Start:**
@@ -154,6 +158,7 @@ Type=simple
 User=zebra
 WorkingDirectory=/opt/zeeder
 Environment="ZEEDER__DNS__DOMAIN=mainnet.seeder.example.com"
+Environment="ZEEDER__DNS__NAMESERVER=ns.seeder.example.com"
 Environment="ZEEDER__CRAWLER__NETWORK=Mainnet"
 Environment="ZEEDER__METRICS__ENDPOINT_ADDR=0.0.0.0:9999"
 ExecStart=/opt/zeeder/target/release/zeeder start
@@ -176,13 +181,13 @@ sudo systemctl start zeeder
 **Example DNS zone configuration:**
 
 ```bind
-; Delegate seeder.example.com to your server
-seeder.example.com.     IN  NS      ns1.seeder.example.com.
-ns1.seeder.example.com. IN  A       203.0.113.10
+; Host the nameserver address outside the served seed domains
+seeder.example.com.    IN  NS      ns.seeder.example.com.
+ns.seeder.example.com. IN  A       203.0.113.10
 
 ; The seeder will answer for these:
-mainnet.seeder.example.com. IN NS ns1.seeder.example.com.
-testnet.seeder.example.com. IN NS ns1.seeder.example.com.
+mainnet.seeder.example.com. IN NS ns.seeder.example.com.
+testnet.seeder.example.com. IN NS ns.seeder.example.com.
 ```
 
 **Verify delegation:**

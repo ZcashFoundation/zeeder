@@ -26,7 +26,7 @@ struct DnsSockets {
 
 /// Run the seeder until the DNS server exits or the process receives a shutdown signal.
 pub(crate) async fn run(config: SeederConfig) -> Result<()> {
-    let seed_zone = SeedZone::new(&config.dns.domain, config.dns.ttl)?;
+    let seed_zone = SeedZone::new(&config.dns.domain, &config.dns.nameserver, config.dns.ttl)?;
     let dns_sockets = bind_dns_sockets(config.dns.listen_addr).await?;
 
     tracing::info!("Initializing zebra-network...");

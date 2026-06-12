@@ -28,6 +28,7 @@ cp .env.example .env
 # ZEEDER__DNS__LISTEN_ADDR="0.0.0.0:1053"
 # ZEEDER__CRAWLER__NETWORK="Testnet"
 # ZEEDER__DNS__DOMAIN="testnet.seeder.example.com"
+# ZEEDER__DNS__NAMESERVER="ns.seeder.example.com"
 
 # Run
 cargo run -- start
