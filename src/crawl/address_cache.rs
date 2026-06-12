@@ -141,10 +141,12 @@ mod tests {
 
     use tracing::Span;
     use zebra_chain::parameters::Network;
-    use zebra_network::constants::MAX_PEER_MISBEHAVIOR_SCORE;
+    use zebra_network::constants::{CURRENT_NETWORK_PROTOCOL_VERSION, MAX_PEER_MISBEHAVIOR_SCORE};
     use zebra_network::types::{MetaAddr, PeerServices};
 
     use super::*;
+
+    const TEST_USER_AGENT: &str = "/zebra-seeder-test/";
 
     fn empty_book() -> AddressBook {
         AddressBook::new(
@@ -157,6 +159,21 @@ mod tests {
 
     fn peer(octets: [u8; 4], port: u16) -> PeerSocketAddr {
         PeerSocketAddr::from(SocketAddr::new(IpAddr::V4(Ipv4Addr::from(octets)), port))
+    }
+
+    fn update_connected_peer(
+        book: &mut AddressBook,
+        addr: PeerSocketAddr,
+        services: PeerServices,
+        is_inbound: bool,
+    ) {
+        book.update(MetaAddr::new_connected(
+            addr,
+            &services,
+            is_inbound,
+            TEST_USER_AGENT.to_string(),
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+        ));
     }
 
     #[test]
@@ -190,11 +207,12 @@ mod tests {
     #[test]
     fn recently_connected_full_node_is_servable() {
         let mut book = empty_book();
-        book.update(MetaAddr::new_connected(
+        update_connected_peer(
+            &mut book,
             peer([1, 2, 3, 4], 8233),
-            &PeerServices::NODE_NETWORK,
+            PeerServices::NODE_NETWORK,
             false,
-        ));
+        );
 
         let peers = servable_peers(&book, &Network::Mainnet, false);
         let served: Vec<IpAddr> = peers.ipv4.iter().map(|p| p.ip()).collect();
@@ -204,11 +222,12 @@ mod tests {
     #[test]
     fn recently_connected_non_full_node_is_not_servable() {
         let mut book = empty_book();
-        book.update(MetaAddr::new_connected(
+        update_connected_peer(
+            &mut book,
             peer([1, 2, 3, 4], 8233),
-            &PeerServices::empty(),
+            PeerServices::empty(),
             false,
-        ));
+        );
 
         let peers = servable_peers(&book, &Network::Mainnet, false);
         assert!(
@@ -220,11 +239,12 @@ mod tests {
     #[test]
     fn recently_connected_inbound_peer_is_not_servable() {
         let mut book = empty_book();
-        book.update(MetaAddr::new_connected(
+        update_connected_peer(
+            &mut book,
             peer([1, 2, 3, 4], 8233),
-            &PeerServices::NODE_NETWORK,
+            PeerServices::NODE_NETWORK,
             true,
-        ));
+        );
 
         let peers = servable_peers(&book, &Network::Mainnet, false);
         assert!(
@@ -238,11 +258,7 @@ mod tests {
         let mut book = empty_book();
         let addr = peer([1, 2, 3, 4], 8233);
         let misbehavior_score = MAX_PEER_MISBEHAVIOR_SCORE - 1;
-        book.update(MetaAddr::new_connected(
-            addr,
-            &PeerServices::NODE_NETWORK,
-            false,
-        ));
+        update_connected_peer(&mut book, addr, PeerServices::NODE_NETWORK, false);
         book.update(MetaAddr::new_misbehavior(addr, misbehavior_score));
 
         assert_eq!(
@@ -268,11 +284,12 @@ mod tests {
     #[test]
     fn responded_peer_on_wrong_port_is_not_servable() {
         let mut book = empty_book();
-        book.update(MetaAddr::new_connected(
+        update_connected_peer(
+            &mut book,
             peer([1, 2, 3, 4], 1234),
-            &PeerServices::NODE_NETWORK,
+            PeerServices::NODE_NETWORK,
             false,
-        ));
+        );
 
         let peers = servable_peers(&book, &Network::Mainnet, false);
         assert!(
@@ -287,11 +304,7 @@ mod tests {
     fn banned_peers_are_removed_from_the_book() {
         let mut book = empty_book();
         let addr = peer([1, 2, 3, 4], 8233);
-        book.update(MetaAddr::new_connected(
-            addr,
-            &PeerServices::NODE_NETWORK,
-            false,
-        ));
+        update_connected_peer(&mut book, addr, PeerServices::NODE_NETWORK, false);
         assert_eq!(book.len(), 1, "the peer starts in the book");
 
         book.update(MetaAddr::new_misbehavior(addr, MAX_PEER_MISBEHAVIOR_SCORE));

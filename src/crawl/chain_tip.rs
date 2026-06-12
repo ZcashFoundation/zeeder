@@ -96,12 +96,14 @@ mod tests {
     }
 
     #[test]
-    fn chain_tip_raises_floor_above_no_chain_tip_fallback() {
-        // The fixed tip must lift the floor above the NoChainTip fallback.
+    fn chain_tip_does_not_lower_no_chain_tip_fallback() {
+        // Zebra's no-tip fallback can already match the current upgrade floor.
+        // The fixed tip must never lower it, and still lets future activation
+        // table updates raise the floor automatically.
         for network in [Network::Mainnet, Network::new_default_testnet()] {
             assert!(
-                version_floor(&network) > no_chain_tip_floor(&network),
-                "{network} floor must exceed the NoChainTip fallback"
+                version_floor(&network) >= no_chain_tip_floor(&network),
+                "{network} floor must not be below the NoChainTip fallback"
             );
         }
     }
