@@ -10,7 +10,6 @@ coverage:
         threshold: 5%
 
 ignore:
-  - "src/tests/**"          # Don't count test code in coverage
   - "build.rs"              # Build script
   
 comment:

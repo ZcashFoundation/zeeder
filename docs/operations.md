@@ -1,56 +1,62 @@
 # Operations Guide
 
-Complete guide for configuring, deploying, and operating zebra-seeder.
+Complete guide for configuring, deploying, and operating zeeder.
 
 ## Configuration
 
 ### Configuration Sources
 
 Configuration is loaded in priority order:
-1. **Environment variables** (`ZEBRA_SEEDER__*`) - highest priority
+1. **Environment variables** (`ZEEDER__*`) - highest priority
 2. **TOML config file** - medium priority
 3. **Hardcoded defaults** - lowest priority
 
 ### Environment Variables
 
-Prefix all variables with `ZEBRA_SEEDER__` and use double underscores for nesting:
+Prefix all variables with `ZEEDER__` and use double underscores for nesting. Zeeder does not use Zebra's `ZEBRA_` namespace, so colocated `zebrad` processes can keep their own `ZEBRA_*` configuration without reading Zeeder settings.
 
 ```bash
 # Core settings
-ZEBRA_SEEDER__DNS_LISTEN_ADDR="0.0.0.0:53"
-ZEBRA_SEEDER__SEED_DOMAIN="mainnet.seeder.example.com"
-ZEBRA_SEEDER__DNS_TTL="600"
+ZEEDER__DNS__LISTEN_ADDR="0.0.0.0:53"
+ZEEDER__DNS__DOMAIN="mainnet.seeder.example.com"
+ZEEDER__DNS__NAMESERVER="ns.seeder.example.com"
+ZEEDER__DNS__TTL="600"
 
-# Network
-ZEBRA_SEEDER__NETWORK__NETWORK="Mainnet"  # or "Testnet"
+# Crawler
+ZEEDER__CRAWLER__NETWORK="Mainnet"  # or "Testnet"
 
 # Rate limiting (recommended for production)
-ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND="10"
-ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE="20"
+ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND="10"
+ZEEDER__RATE_LIMIT__BURST_SIZE="20"
 
 # Metrics (optional)
-ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR="0.0.0.0:9999"
+ZEEDER__METRICS__ENDPOINT_ADDR="0.0.0.0:9999"
 ```
 
 ### `.env` File
 
-Create `.env` in project root (see [`.env-example.txt`](../.env-example.txt)):
+Create `.env` in project root (see [`.env.example`](../.env.example)):
 
 ```bash
-cp .env-example.txt .env
+cp .env.example .env
 # Edit .env with your values
 ```
+
+The `.env` file is optional. If it exists, it must parse successfully or the
+seeder exits before loading configuration.
 
 ### TOML Config File
 
 Example `config.toml`:
 
 ```toml
-dns_listen_addr = "0.0.0.0:53"
-seed_domain = "mainnet.seeder.example.com"
-dns_ttl = 600
+[dns]
+listen_addr = "0.0.0.0:53"
+domain = "mainnet.seeder.example.com"
+nameserver = "ns.seeder.example.com"
+ttl = 600
 
-[network]
+[crawler]
 network = "Mainnet"
 
 [rate_limit]
@@ -61,34 +67,36 @@ burst_size = 20
 endpoint_addr = "0.0.0.0:9999"
 ```
 
-Use with: `zebra-seeder start --config config.toml`
+Use with: `zeeder start --config config.toml`
 
 ### Configuration Reference
 
 | Parameter | Environment Variable | Default | Description |
 |-----------|---------------------|---------|-------------|
-| `dns_listen_addr` | `ZEBRA_SEEDER__DNS_LISTEN_ADDR` | `0.0.0.0:53` | DNS server address and port |
-| `dns_ttl` | `ZEBRA_SEEDER__DNS_TTL` | `600` | DNS response TTL in seconds |
-| `seed_domain` | `ZEBRA_SEEDER__SEED_DOMAIN` | `mainnet.seeder.example.com` | Authoritative domain |
-| `network.network` | `ZEBRA_SEEDER__NETWORK__NETWORK` | `Mainnet` | Zcash network (`Mainnet` or `Testnet`) |
-| `rate_limit.queries_per_second` | `ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP |
-| `rate_limit.burst_size` | `ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity |
-| `metrics.endpoint_addr` | `ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR` | (disabled) | Prometheus endpoint |
+| `dns.listen_addr` | `ZEEDER__DNS__LISTEN_ADDR` | `0.0.0.0:53` | DNS server address and port |
+| `dns.domain` | `ZEEDER__DNS__DOMAIN` | `mainnet.seeder.example.com` | Authoritative domain |
+| `dns.nameserver` | `ZEEDER__DNS__NAMESERVER` | `ns.seeder.example.com` | Out-of-zone authoritative nameserver |
+| `dns.ttl` | `ZEEDER__DNS__TTL` | `600` | DNS response TTL in seconds |
+| `crawler.network` | `ZEEDER__CRAWLER__NETWORK` | `Mainnet` | Zcash network (`Mainnet` or `Testnet`) |
+| `rate_limit.queries_per_second` | `ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP; must be greater than 0 |
+| `rate_limit.burst_size` | `ZEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity; must be greater than 0 |
+| `metrics.endpoint_addr` | `ZEEDER__METRICS__ENDPOINT_ADDR` | (disabled) | Prometheus endpoint |
 
 ## Deployment
 
 ### Prerequisites
 
-- **DNS delegation**: Your `seed_domain` must have NS records pointing to your server
+- **DNS delegation**: Your configured `dns.domain` must delegate to `dns.nameserver`, and `dns.nameserver` must resolve outside `dns.domain`
 - **Port 53**: UDP (and optionally TCP) access required
-- **Outbound connectivity**: Access to Zcash P2P network (port 8233 for mainnet, 18233 for testnet)
+- **Outbound connectivity**: Access to the Zcash P2P network (port 8233 for mainnet, 18233 for testnet)
+- **Crawler listener**: The crawler binds `[::]:8233` on mainnet and `[::]:18233` on testnet. Expose that listener only if you want the seeder to accept inbound P2P connections.
 - **Resources**: ~100MB RAM, minimal CPU
 
 ### Docker Deployment (Recommended)
 
 **1. Build image:**
 ```bash
-docker build -t zebra-seeder .
+docker build -t zeeder .
 ```
 
 **2. Run with docker-compose:**
@@ -96,21 +104,24 @@ docker build -t zebra-seeder .
 version: "3.8"
 services:
   seeder:
-    image: zebra-seeder
+    image: zeeder
     restart: unless-stopped
     ports:
-      - "53:53/udp"
-      - "9999:9999"  # metrics
+      - "53:1053/udp"
+      - "53:1053/tcp"
+      - "9999:9999/tcp"  # metrics
     environment:
-      ZEBRA_SEEDER__SEED_DOMAIN: "mainnet.seeder.example.com"
-      ZEBRA_SEEDER__NETWORK__NETWORK: "Mainnet"
-      ZEBRA_SEEDER__DNS_TTL: "600"
-      ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR: "0.0.0.0:9999"
+      ZEEDER__DNS__DOMAIN: "mainnet.seeder.example.com"
+      ZEEDER__DNS__NAMESERVER: "ns.seeder.example.com"
+      ZEEDER__CRAWLER__NETWORK: "Mainnet"
+      ZEEDER__DNS__LISTEN_ADDR: "0.0.0.0:1053"
+      ZEEDER__DNS__TTL: "600"
+      ZEEDER__METRICS__ENDPOINT_ADDR: "0.0.0.0:9999"
     volumes:
-      - seeder-cache:/root/.cache/zebra/network  # Persist address book
+      - zeeder-cache:/cache
 
 volumes:
-  seeder-cache:
+  zeeder-cache:
 ```
 
 **3. Start:**
@@ -132,11 +143,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 **2. Build:**
 ```bash
-cd zebra-seeder
+cd zeeder
 cargo build --release
 ```
 
-**3. Create systemd service** (`/etc/systemd/system/zebra-seeder.service`):
+**3. Create systemd service** (`/etc/systemd/system/zeeder.service`):
 ```ini
 [Unit]
 Description=Zcash DNS Seeder
@@ -145,11 +156,12 @@ After=network.target
 [Service]
 Type=simple
 User=zebra
-WorkingDirectory=/opt/zebra-seeder
-Environment="ZEBRA_SEEDER__SEED_DOMAIN=mainnet.seeder.example.com"
-Environment="ZEBRA_SEEDER__NETWORK__NETWORK=Mainnet"
-Environment="ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR=0.0.0.0:9999"
-ExecStart=/opt/zebra-seeder/target/release/zebra-seeder start
+WorkingDirectory=/opt/zeeder
+Environment="ZEEDER__DNS__DOMAIN=mainnet.seeder.example.com"
+Environment="ZEEDER__DNS__NAMESERVER=ns.seeder.example.com"
+Environment="ZEEDER__CRAWLER__NETWORK=Mainnet"
+Environment="ZEEDER__METRICS__ENDPOINT_ADDR=0.0.0.0:9999"
+ExecStart=/opt/zeeder/target/release/zeeder start
 Restart=always
 RestartSec=10
 
@@ -160,8 +172,8 @@ WantedBy=multi-user.target
 **4. Enable and start:**
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable zebra-seeder
-sudo systemctl start zebra-seeder
+sudo systemctl enable zeeder
+sudo systemctl start zeeder
 ```
 
 ### DNS Setup
@@ -169,13 +181,13 @@ sudo systemctl start zebra-seeder
 **Example DNS zone configuration:**
 
 ```bind
-; Delegate seeder.example.com to your server
-seeder.example.com.     IN  NS      ns1.seeder.example.com.
-ns1.seeder.example.com. IN  A       203.0.113.10
+; Host the nameserver address outside the served seed domains
+seeder.example.com.    IN  NS      ns.seeder.example.com.
+ns.seeder.example.com. IN  A       203.0.113.10
 
 ; The seeder will answer for these:
-mainnet.seeder.example.com. IN NS ns1.seeder.example.com.
-testnet.seeder.example.com. IN NS ns1.seeder.example.com.
+mainnet.seeder.example.com. IN NS ns.seeder.example.com.
+testnet.seeder.example.com. IN NS ns.seeder.example.com.
 ```
 
 **Verify delegation:**
@@ -189,9 +201,14 @@ dig @203.0.113.10 mainnet.seeder.example.com A
 ```bash
 # Allow DNS queries
 ufw allow 53/udp
+ufw allow 53/tcp
 
 # Allow metrics (from monitoring network only)
 ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
+
+# Optional: allow inbound P2P crawler connections (choose one network)
+ufw allow 8233/tcp   # mainnet
+ufw allow 18233/tcp  # testnet
 
 # Allow outbound to Zcash network
 # (Usually no action needed for outbound)
@@ -204,7 +221,7 @@ ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
 - ✅ Running as non-root user
 - ✅ DNS domain validation (automatic)
 - ✅ Regular security updates
-- ✅ Monitor `seeder_mutex_poisoning_total` metric
+- ✅ Monitor `zeeder_mutex_poisoning_total` metric
 
 ## Monitoring & Operations
 
@@ -212,42 +229,61 @@ ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
 
 **Metrics endpoint:** `http://localhost:9999/metrics` (if enabled)
 
+### Health Checks
+
+**Liveness:** the DNS server is live when it returns an authoritative response
+for the configured seed domain:
+
+```bash
+dig @127.0.0.1 -p 1053 testnet.seeder.example.com SOA
+```
+
+**Readiness:** the crawler is ready to serve bootstrap peers when at least one
+address family has a non-zero servable-peer gauge:
+
+```bash
+curl -s http://localhost:9999/metrics | grep 'zeeder_peers_servable'
+```
+
+A zero gauge means DNS can still answer zone metadata and NODATA responses, but
+bootstrap A/AAAA answers will be empty for that address family.
+
 **Critical Metrics to Monitor:**
 
 | Metric | Type | Labels | Description | Alert If |
 |--------|------|--------|-------------|----------|
-| `seeder_peers_servable` | Gauge | `addr_family=v4\|v6` | Servable peers (recently-live, current-version) | < 10 |
-| `seeder_peers_ineligible` | Gauge | `reason=not_routable\|wrong_port\|not_recently_live\|not_full_node` | Excluded peers, by reason | - |
-| `seeder_peers_known` | Gauge | - | Total peers in the address book | - |
-| `seeder_min_protocol_version` | Gauge | - | Enforced protocol-version floor | changes only at a network upgrade |
-| `seeder_build_info` | Gauge | `version`, `network` | Build and network identification | - |
-| `seeder_mutex_poisoning_total` | Counter | `location=cache_updater\|metrics_logger` | Mutex poisoning events | > 0 |
-| `seeder_dns_rate_limited_total` | Counter | - | Rate-limited queries | Spike indicates attack |
-| `seeder_dns_errors_total` | Counter | - | DNS errors | > 0 (sustained) |
-| `seeder_dns_queries_total` | Counter | `record_type=A\|AAAA` | Total queries | - |
-| `seeder_dns_response_peers` | Histogram | - | Peers per response | - |
+| `zeeder_peers_servable` | Gauge | `addr_family=v4\|v6` | Servable peers (recently-live, current-version, outbound, clean) | < 10 |
+| `zeeder_peers_unservable` | Gauge | `reason=not_routable\|wrong_port\|not_recently_live\|not_full_node\|inbound\|misbehaving` | Unservable peers, by reason | - |
+| `zeeder_peers_known` | Gauge | - | Total peers in the address book | - |
+| `zeeder_min_protocol_version` | Gauge | - | Enforced protocol-version floor | changes only at a network upgrade |
+| `zeeder_build_info` | Gauge | `version`, `git_sha`, `network` | Build and network identification | - |
+| `zeeder_mutex_poisoning_total` | Counter | - | Mutex poisoning events | > 0 |
+| `zeeder_dns_rate_limited_total` | Counter | - | Rate-limited queries | Spike indicates attack |
+| `zeeder_dns_errors_total` | Counter | - | DNS errors | > 0 (sustained) |
+| `zeeder_dns_queries_total` | Counter | `record_type=A\|AAAA\|SOA\|NS\|other` | Total queries | - |
+| `zeeder_dns_response_peers` | Summary | - | Peers per response | - |
 
 ### Sample Prometheus Queries
 
 **Servable peer count:**
 ```promql
-seeder_peers_servable{addr_family="v4"}
-seeder_peers_servable{addr_family="v6"}
+zeeder_peers_servable{addr_family="v4"}
+zeeder_peers_servable{addr_family="v6"}
 ```
 
 **Query rate (queries/sec):**
 ```promql
-rate(seeder_dns_queries_total[5m])
+rate(zeeder_dns_queries_total[5m])
 ```
 
 **Rate limiting rate:**
 ```promql
-rate(seeder_dns_rate_limited_total[5m])
+rate(zeeder_dns_rate_limited_total[5m])
 ```
 
 **Average peers per response:**
 ```promql
-rate(seeder_dns_response_peers_sum[5m]) / rate(seeder_dns_response_peers_count[5m])
+rate(zeeder_dns_response_peers_sum[5m]) / rate(zeeder_dns_response_peers_count[5m])
 ```
 
 ### Alerting Rules
@@ -256,21 +292,21 @@ rate(seeder_dns_response_peers_sum[5m]) / rate(seeder_dns_response_peers_count[5
 
 ```yaml
 groups:
-  - name: zebra-seeder
+  - name: zeeder
     rules:
       - alert: SeederLowPeerCount
-        expr: seeder_peers_servable < 10
+        expr: zeeder_peers_servable < 10
         for: 15m
         annotations:
           summary: "Seeder has low peer count"
           
       - alert: SeederMutexPoisoned
-        expr: increase(seeder_mutex_poisoning_total[5m]) > 0
+        expr: increase(zeeder_mutex_poisoning_total[5m]) > 0
         annotations:
           summary: "CRITICAL: Mutex poisoning detected"
           
       - alert: SeederHighRateLimiting
-        expr: rate(seeder_dns_rate_limited_total[5m]) > 10
+        expr: rate(zeeder_dns_rate_limited_total[5m]) > 10
         for: 5m
         annotations:
           summary: "High rate limiting (possible attack)"
@@ -281,10 +317,10 @@ groups:
 **No peers returning:**
 ```bash
 # Check peer count
-curl -s http://localhost:9999/metrics | grep peers_servable
+curl -s http://localhost:9999/metrics | grep 'zeeder_peers_servable'
 
 # Check logs for errors
-journalctl -u zebra-seeder -n 100
+journalctl -u zeeder -n 100
 
 # Verify network connectivity
 dig @seed.electriccoin.co mainnet.z.cash A
@@ -296,7 +332,7 @@ dig @seed.electriccoin.co mainnet.z.cash A
 ss -ulnp | grep :53
 
 # Check logs
-journalctl -u zebra-seeder -f
+journalctl -u zeeder -f
 
 # Test locally
 dig @127.0.0.1 -p 1053 testnet.seeder.example.com A
@@ -305,21 +341,21 @@ dig @127.0.0.1 -p 1053 testnet.seeder.example.com A
 **Rate limiting too aggressive:**
 ```bash
 # Increase limits (adjust for your traffic)
-export ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND="20"
-export ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE="40"
+export ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND="20"
+export ZEEDER__RATE_LIMIT__BURST_SIZE="40"
 
 # Restart seeder
-systemctl restart zebra-seeder
+systemctl restart zeeder
 ```
 
 **High memory usage:**
 ```bash
 # Check address book size
-curl -s http://localhost:9999/metrics | grep peers_known
+curl -s http://localhost:9999/metrics | grep 'zeeder_peers_known'
 
 # Clear cache if needed (will rebuild)
 rm -rf ~/.cache/zebra/network/*
-systemctl restart zebra-seeder
+systemctl restart zeeder
 ```
 
 ### Maintenance
@@ -327,7 +363,7 @@ systemctl restart zebra-seeder
 **Viewing logs:**
 ```bash
 # Systemd
-journalctl -u zebra-seeder -f
+journalctl -u zeeder -f
 
 # Docker
 docker-compose logs -f seeder
@@ -336,7 +372,7 @@ docker-compose logs -f seeder
 **Restarting:**
 ```bash
 # Systemd
-systemctl restart zebra-seeder
+systemctl restart zeeder
 
 # Docker
 docker-compose restart seeder
@@ -345,11 +381,11 @@ docker-compose restart seeder
 **Upgrading:**
 ```bash
 # Systemd
-sudo systemctl stop zebra-seeder
-cd /opt/zebra-seeder
+sudo systemctl stop zeeder
+cd /opt/zeeder
 git pull
 cargo build --release
-sudo systemctl start zebra-seeder
+sudo systemctl start zeeder
 
 # Docker
 docker-compose pull
@@ -357,7 +393,8 @@ docker-compose up -d
 ```
 
 **Cache persistence:**
-- Address book cached in `~/.cache/zebra/network/`
+- Address book cached in `~/.cache/zebra/network/` by default
+- The Docker image sets `XDG_CACHE_HOME=/cache`, so its peer cache lives under `/cache/zebra/network/`
 - Persisting this directory speeds up startup
 - Safe to delete (will rebuild from network)
 

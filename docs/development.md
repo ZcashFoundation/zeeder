@@ -1,20 +1,20 @@
 # Development Guide
 
-Guide for contributors and developers working on zebra-seeder.
+Guide for contributors and developers working on zeeder.
 
 ## Getting Started
 
 ### Prerequisites
 
-- Rust 1.70+ (`rustup update stable`)
+- Rust from `rust-toolchain.toml` (`1.95.0`, with `clippy` and `rustfmt`)
 - Git
 - Docker (optional, for testing)
 
 ### Clone and Build
 
 ```bash
-git clone https://github.com/zcashfoundation/dnsseederNG
-cd dnsseederNG
+git clone https://github.com/zcashfoundation/zeeder
+cd zeeder
 cargo build
 ```
 
@@ -22,15 +22,16 @@ cargo build
 
 ```bash
 # Copy example environment file
-cp .env-example.txt .env
+cp .env.example .env
 
 # Edit .env for testnet (uses port 1053 to avoid requiring root)
-# ZEBRA_SEEDER__DNS_LISTEN_ADDR="0.0.0.0:1053"
-# ZEBRA_SEEDER__NETWORK__NETWORK="Testnet"
-# ZEBRA_SEEDER__SEED_DOMAIN="testnet.seeder.example.com"
+# ZEEDER__DNS__LISTEN_ADDR="0.0.0.0:1053"
+# ZEEDER__CRAWLER__NETWORK="Testnet"
+# ZEEDER__DNS__DOMAIN="testnet.seeder.example.com"
+# ZEEDER__DNS__NAMESERVER="ns.seeder.example.com"
 
 # Run
-cargo run start
+cargo run -- start
 
 # Test in another terminal
 dig @127.0.0.1 -p 1053 testnet.seeder.example.com A
@@ -39,17 +40,17 @@ dig @127.0.0.1 -p 1053 testnet.seeder.example.com A
 ## Project Structure
 
 ```
-zebra-seeder/
+zeeder/
 ├── src/
 │   ├── main.rs           # Entry point
 │   ├── commands.rs       # CLI command handling
 │   ├── config.rs         # Configuration structures
-│   ├── server.rs         # DNS server + crawler logic
-│   ├── metrics.rs        # Prometheus metrics setup
-│   └── tests/            # Unit tests
-│       ├── mod.rs
-│       ├── cli_tests.rs
-│       └── config_tests.rs
+│   ├── crawl.rs          # Crawl-side module registration
+│   ├── crawl/            # Chain tip, servability, and address cache
+│   ├── dns.rs            # DNS-side module registration
+│   ├── dns/              # DNS request handling and rate limiting
+│   ├── seeder.rs         # Process composition and shutdown handling
+│   └── metrics.rs        # Prometheus metrics setup
 ├── docs/                 # Documentation
 ├── Dockerfile            # Container image
 ├── docker-compose.yml    # Docker orchestration
@@ -60,9 +61,11 @@ zebra-seeder/
 ### Key Files
 
 - **`main.rs`**: Entry point, error handling setup
-- **`commands.rs`**: CLI parsing, config loading, server initialization
+- **`commands.rs`**: CLI parsing, config loading, and command dispatch
 - **`config.rs`**: `SeederConfig` struct, configuration loading
-- **`server.rs`**: Core logic - DNS server, rate limiting, crawler
+- **`seeder.rs`**: Composition root for crawling, DNS serving, and shutdown
+- **`crawl/`**: Chain tip, peer servability, and servable peer cache
+- **`dns/`**: DNS request handling and rate limiting
 - **`metrics.rs`**: Prometheus metrics initialization
 
 ## Code Overview
@@ -75,17 +78,27 @@ zebra-seeder/
 - `MetricsConfig`: Metrics endpoint settings
 - Serde deserialization from env vars/TOML
 
-**Server (`server.rs`):**
-- `spawn()`: Main server initialization
+**Seeder (`seeder.rs`):**
+- `run()`: Main seeder initialization and shutdown select
+
+**Crawl (`crawl/`):**
+- `SeederChainTip`: Protocol-version floor for zebra-network handshakes
+- `classify_peer()`: Peer servability predicate
+- `address_cache::spawn()`: Servable peer refresh loop and crawler monitoring
+- `ServablePeers`: Shuffled, capped peer snapshot for DNS queries
+
+**DNS (`dns/`):**
+- `DnsRequestHandler`: DNS request handler (implements `RequestHandler`)
 - `RateLimiter`: Per-IP rate limiting
-- `SeederAuthority`: DNS request handler (implements `RequestHandler`)
-- `log_crawler_status()`: Crawler monitoring
-- Peer filtering and shuffling logic
 
 **Commands (`commands.rs`):**
 - CLI structure with clap
 - Config loading orchestration
-- Server spawning
+- Metrics initialization and command dispatch
+
+### Runtime Naming Convention
+
+Use `run` for functions that take over the caller until shutdown or command completion. Use `spawn` only for functions that detach a background task and return the caller's interaction surface, such as a receiver or handle.
 
 ## Testing
 
@@ -139,11 +152,10 @@ open coverage/index.html
 
 ### Test Structure
 
-- **Unit tests**: Inline in source files (e.g., `src/server.rs`)
-- **Config tests**: `src/tests/config_tests.rs` (env var handling, defaults)
-- **CLI tests**: `src/tests/cli_tests.rs` (argument parsing)
-- **DNS integration tests**: `src/server.rs` (inline async tests)
-- **Property-based tests**: `src/server.rs` (proptest for IP filtering)
+- **Unit tests**: Inline in source files (e.g., `src/crawl/servability.rs`)
+- **Config tests**: `src/config.rs` (env var handling, defaults)
+- **CLI tests**: `src/commands.rs` (argument parsing)
+- **DNS handler tests**: `src/dns/request_handler.rs` (inline async tests)
 
 ### Adding Tests
 
@@ -157,7 +169,7 @@ fn test_new_feature() {
 }
 ```
 
-**Async integration test example:**
+**Async handler test example:**
 ```rust
 #[tokio::test]
 async fn test_dns_feature() {
@@ -165,29 +177,16 @@ async fn test_dns_feature() {
 }
 ```
 
-**Property-based test example:**
-```rust
-use proptest::prelude::*;
-
-proptest! {
-    #[test]
-    fn prop_never_panics(input in any::<u32>()) {
-        // Test with random inputs
-    }
-}
-```
-
-For config tests with env vars, use `with_env_lock`:
+For config tests that need environment variables, use `temp_env` so each test scopes its own variables:
 
 ```rust
 #[test]
-fn test_my_config() {
-    with_env_lock(|| {
-        env::set_var("ZEBRA_SEEDER__MY_PARAM", "value");
-        let config = SeederConfig::load_with_env(None).unwrap();
+fn test_my_config() -> color_eyre::Result<()> {
+    temp_env::with_var("ZEEDER__MY_PARAM", Some("value"), || {
+        let config = SeederConfig::load_with_env(None)?;
         assert_eq!(config.my_param, "value");
-        env::remove_var("ZEBRA_SEEDER__MY_PARAM");
-    });
+        Ok(())
+    })
 }
 ```
 
@@ -232,23 +231,23 @@ cargo outdated -R -d 1
 
 ```bash
 # Auto-format code
-cargo fmt
+cargo fmt --all
 
 # Check formatting
-cargo fmt --check
+cargo fmt --all -- --check
 ```
 
 ### Linting
 
 ```bash
 # Run clippy
-cargo clippy -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 ### Pre-commit Checks
 
 ```bash
-# Run all checks (format, clippy, build, test)
+# Run all local validation gates
 ./commit_checks.sh
 ```
 
@@ -296,17 +295,18 @@ docs: update deployment guide
 
 ### Adding New Configuration Parameter
 
-1. Add field to `SeederConfig` in `src/config.rs`:
+1. Add the field to the config struct that owns the setting in `src/config.rs`
+   (`DnsConfig`, `CrawlerConfig`, `MetricsConfig`, or `RateLimitConfig`):
 ```rust
-pub struct SeederConfig {
+pub(crate) struct DnsConfig {
     // ...
-    pub my_param: String,
+    pub(crate) my_param: String,
 }
 ```
 
 2. Update `Default` impl:
 ```rust
-impl Default for SeederConfig {
+impl Default for DnsConfig {
     fn default() -> Self {
         Self {
             // ...
@@ -316,62 +316,65 @@ impl Default for SeederConfig {
 }
 ```
 
-3. Add test in `src/tests/config_tests.rs`:
+3. Add validation in the owning config type when invalid values are possible, and
+   call it from `SeederConfig::validate()`.
+
+4. Add tests in the module that owns the config code (`src/config.rs`):
 ```rust
 #[test]
 fn test_my_param_default() {
-    let config = SeederConfig::default();
+    let config = DnsConfig::default();
     assert_eq!(config.my_param, "default_value");
 }
 ```
 
-4. Document in `docs/operations.md` configuration table
+5. Document the setting in `docs/operations.md` configuration table.
 
 ### Adding New Metric
 
-1. Add metric in relevant location (e.g., `src/server.rs`):
-```rust
-use metrics::{counter, gauge, histogram};
+1. Add the metric name or label to `src/metrics.rs`.
 
-counter!("seeder_my_metric_total").increment(1);
-gauge!("seeder_my_gauge").set(42.0);
-histogram!("seeder_my_histogram").record(10.5);
+2. Emit the metric from the module that owns the event:
+```rust
+use metrics::counter;
+use crate::metrics::MY_METRIC_TOTAL;
+
+counter!(MY_METRIC_TOTAL).increment(1);
 ```
 
-2. Document in `docs/operations.md` metrics table
+3. Document in `docs/operations.md` metrics table.
 
 ### Debugging
 
 **Enable debug logging:**
 ```bash
-RUST_LOG=debug cargo run start
+RUST_LOG=debug cargo run -- start
 ```
 
 **Trace-level (very verbose):**
 ```bash
-RUST_LOG=zebra_seeder=trace cargo run start
+RUST_LOG=zeeder=trace cargo run -- start
 ```
 
 **Filter by module:**
 ```bash
-RUST_LOG=zebra_seeder::server=debug cargo run start
+RUST_LOG=zeeder::dns::request_handler=debug cargo run -- start
 ```
 
 ## Release Process
 
 1. **Update version** in `Cargo.toml`
-2. **Update CHANGELOG.md** with changes
-3. **Run checks**: `./commit_checks.sh`
-4. **Commit**: `git commit -m "chore: release v1.2.3"`
-5. **Tag**: `git tag -a v1.2.3 -m "Release v1.2.3"`
-6. **Push**: `git push && git push --tags`
-7. **Build release**: `cargo build --release`
-8. **Create GitHub release** with binaries
+2. **Run checks**: `./commit_checks.sh`
+3. **Commit**: `git commit -m "chore: release v1.2.3"`
+4. **Tag**: `git tag -a v1.2.3 -m "Release v1.2.3"`
+5. **Push**: `git push && git push --tags`
+6. **Build release**: `cargo build --release`
+7. **Create GitHub release** with binaries
 
 ## Useful Resources
 
 - [Zebra Project](https://github.com/ZcashFoundation/zebra) - Zcash full node
-- [hickory-dns Docs](https://docs.rs/hickory-dns/) - DNS server library
+- [hickory-server Docs](https://docs.rs/hickory-server/) - DNS server library
 - [governor Docs](https://docs.rs/governor/) - Rate limiting
 - [Zcash Protocol Spec](https://zips.z.cash/protocol/protocol.pdf)
 

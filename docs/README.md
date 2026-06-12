@@ -1,4 +1,4 @@
-# zebra-seeder Documentation
+# zeeder Documentation
 
 Documentation for the Zcash DNS seeder.
 
@@ -7,6 +7,7 @@ Documentation for the Zcash DNS seeder.
 - **[Architecture](architecture.md)** - System design, components, and key decisions (ADRs)
 - **[Operations](operations.md)** - Configuration, deployment, and monitoring
 - **[Development](development.md)** - Contributing and development guide
+- **[Context](../CONTEXT.md)** - Glossary for load-bearing project terms
 
 ## Start Here
 
@@ -14,7 +15,7 @@ Documentation for the Zcash DNS seeder.
 **👨‍💻 Developers:** Read [Architecture](architecture.md) → [Development](development.md)  
 **👀 Code Reviewers:** Read [Architecture](architecture.md)
 
-## What is zebra-seeder?
+## What is zeeder?
 
 A DNS seeder for Zcash that:
 - Crawls the network to discover healthy peers
@@ -22,4 +23,4 @@ A DNS seeder for Zcash that:
 - Implements rate limiting to prevent DDoS abuse
 - Provides Prometheus metrics
 
-Built with Rust using `zebra-network` and `hickory-dns`.
+Built with Rust using `zebra-network` and Hickory DNS.
