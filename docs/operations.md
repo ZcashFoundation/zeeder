@@ -428,6 +428,24 @@ For each additional nameserver IP, run the direct `dig @<ip>` checks. Do not
 only test recursive resolution, because recursive resolvers may cache old
 answers or hide one failed nameserver behind retries.
 
+### Zebra Client Configuration
+
+Zebra resolves the seed domain, not the nameserver hostname. A Zebra config
+entry should use the seed domain plus the Zcash P2P port:
+
+```toml
+[network]
+initial_mainnet_peers = ["mainnet.seeder.example.com:8233"]
+initial_testnet_peers = ["testnet.seeder.example.com:18233"]
+```
+
+At startup, Zebra asks the operating system resolver for A and AAAA records for
+those hostnames, attaches the configured P2P port to each returned IP address,
+filters invalid peer addresses, limits initial connection attempts, and then
+handshakes with those peers. It does not connect to `dns.nameserver`; that name
+exists so recursive resolvers can find the authoritative DNS server for the
+seed domain.
+
 ### DNS Provider Notes
 
 Most DNS providers expose this as a delegated subdomain or NS record. Add the
