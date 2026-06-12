@@ -10,7 +10,7 @@ Raw address-book membership is not enough. Gossiped, stale, inbound-provenance, 
 
 ## Seed Domain
 
-The seed domain is the configured `dns.domain` that the seeder is authoritative for. Exact-name A and AAAA queries return servable peers. Exact-name SOA and NS queries return synthesized zone metadata. Unsupported exact-name queries and deeper in-zone names return NODATA with SOA. Out-of-zone names return REFUSED.
+The seed domain is the configured `dns.domain` that the seeder is authoritative for. Exact-name A and AAAA queries return servable peers when that address family has entries, or NODATA with SOA when it is empty. Exact-name SOA and NS queries return synthesized zone metadata. Unsupported exact-name queries and deeper in-zone names return NODATA with SOA. Out-of-zone names return REFUSED.
 
 Changing seed-domain behavior is a DNS contract change. Update ADR 0002 and the DNS request-handler tests with any intentional change.
 

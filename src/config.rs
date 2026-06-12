@@ -223,8 +223,19 @@ impl SeederConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
-    type TestResult = color_eyre::Result<()>;
+    type TestResult<T = ()> = color_eyre::Result<T>;
+
+    fn config_file_path(name: &str) -> TestResult<PathBuf> {
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+
+        Ok(std::env::temp_dir().join(format!("zebra-seeder-{name}-{timestamp}.toml")))
+    }
 
     #[test]
     fn test_default_config() {
@@ -262,6 +273,58 @@ mod tests {
         // `print-config` renders the resolved config as TOML, so the config must be
         // TOML-serializable.
         assert!(toml::to_string_pretty(&SeederConfig::default()).is_ok());
+    }
+
+    #[test]
+    fn loads_toml_config_file() -> TestResult {
+        let path = config_file_path("config")?;
+        fs::write(
+            &path,
+            r#"
+[crawler]
+network = "Testnet"
+
+[dns]
+listen_addr = "127.0.0.1:1053"
+domain = "testnet.seeder.example.com"
+ttl = 300
+
+[rate_limit]
+queries_per_second = 50
+burst_size = 100
+"#,
+        )?;
+
+        let config = temp_env::with_vars(
+            [
+                ("ZEBRA_SEEDER__CRAWLER__NETWORK", None::<&str>),
+                ("ZEBRA_SEEDER__DNS__DOMAIN", None),
+                ("ZEBRA_SEEDER__DNS__LISTEN_ADDR", None),
+                ("ZEBRA_SEEDER__DNS__TTL", None),
+                ("ZEBRA_SEEDER__DNS_TTL", None),
+                ("ZEBRA_SEEDER__DNS__TTTL", None),
+                ("ZEBRA_SEEDER__NETWORK__NETWORK", None),
+                ("ZEBRA_SEEDER__METRICS__ENDPOINT_ADRR", None),
+                ("ZEBRA_SEEDER__RATE_LIMIT__BURSTT_SIZE", None),
+                ("ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND", None),
+                ("ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE", None),
+            ],
+            || SeederConfig::load_with_env(Some(path.clone())),
+        );
+        fs::remove_file(&path)?;
+        let config = config?;
+
+        assert_eq!(config.crawler.network, CrawlerNetwork::Testnet);
+        assert_eq!(config.dns.listen_addr.to_string(), "127.0.0.1:1053");
+        assert_eq!(config.dns.domain, "testnet.seeder.example.com");
+        assert_eq!(config.dns.ttl, 300);
+        assert_eq!(
+            config
+                .rate_limit
+                .map(|rate_limit| (rate_limit.queries_per_second, rate_limit.burst_size)),
+            Some((50, 100))
+        );
+        Ok(())
     }
 
     #[test]

@@ -27,11 +27,13 @@ const CRAWLER_STATUS_LOG_REFRESHES: u64 = 120;
 /// Cached servable peers for lock-free DNS response generation.
 ///
 /// Updated periodically by a background task so DNS queries read a shuffled,
-/// pre-filtered snapshot without ever locking the address book.
+/// pre-filtered snapshot without ever locking the address book. Address-family
+/// slices are reference-counted so DNS queries can clone the snapshot without
+/// copying the peer lists.
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ServablePeers {
-    pub(crate) ipv4: Vec<PeerSocketAddr>,
-    pub(crate) ipv6: Vec<PeerSocketAddr>,
+    pub(crate) ipv4: Arc<[PeerSocketAddr]>,
+    pub(crate) ipv6: Arc<[PeerSocketAddr]>,
 }
 
 /// Spawns the background task that refreshes the served-address cache.
@@ -127,7 +129,10 @@ fn servable_peers(book: &AddressBook, network: &Network, should_log_status: bool
     ipv6.shuffle(&mut rng);
     ipv6.truncate(MAX_DNS_RESPONSE_PEERS);
 
-    ServablePeers { ipv4, ipv6 }
+    ServablePeers {
+        ipv4: ipv4.into(),
+        ipv6: ipv6.into(),
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +157,19 @@ mod tests {
 
     fn peer(octets: [u8; 4], port: u16) -> PeerSocketAddr {
         PeerSocketAddr::from(SocketAddr::new(IpAddr::V4(Ipv4Addr::from(octets)), port))
+    }
+
+    #[test]
+    fn servable_peer_snapshots_clone_without_copying_peer_lists() {
+        let peers = ServablePeers {
+            ipv4: vec![peer([1, 2, 3, 4], 8233)].into(),
+            ipv6: Arc::default(),
+        };
+
+        let cloned_peers = peers.clone();
+
+        assert!(Arc::ptr_eq(&peers.ipv4, &cloned_peers.ipv4));
+        assert!(Arc::ptr_eq(&peers.ipv6, &cloned_peers.ipv6));
     }
 
     /// Never-handshaked peers are in the book but must never be served.

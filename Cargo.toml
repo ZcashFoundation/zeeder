@@ -10,33 +10,69 @@ categories = ["cryptography::cryptocurrencies", "network-programming"]
 
 
 [dependencies]
-tokio = { version = "1.52", features = ["full", "tracing"] }
-hickory-dns = "0.26.1"
-config = "0.15"
-serde = { version = "1.0", features = ["derive"] }
-chrono = "0.4"
-clap = { version = "4.5", features = ["derive", "env"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-color-eyre = "0.6"
-tower = { version = "0.5", features = ["util"] }
-zebra-network = "8.0.0"
-zebra-chain = "9.0.0"
-dotenvy = "0.15.7"
-rand = "0.10.1"
-async-trait = "0.1.89"
-hickory-server = "0.26.1"
-hickory-proto = "0.26.1"
-metrics = "0.24.6"
-metrics-exporter-prometheus = "0.18.3"
-governor = "0.10"
-toml = "1"
+tokio = { version = "1.52", default-features = false, features = [
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
+config = { version = "0.15", default-features = false, features = ["toml"] }
+serde = { version = "1.0", default-features = false, features = [
+    "derive",
+    "std",
+] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.5", default-features = false, features = [
+    "derive",
+    "error-context",
+    "help",
+    "std",
+    "usage",
+] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "env-filter",
+    "fmt",
+    "registry",
+    "std",
+] }
+color-eyre = { version = "0.6", default-features = false, features = [
+    "track-caller",
+] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+zebra-network = { version = "8.0.0", default-features = false }
+zebra-chain = { version = "9.0.0", default-features = false }
+dotenvy = { version = "0.15.7", default-features = false }
+rand = { version = "0.10.1", default-features = false, features = [
+    "thread_rng",
+] }
+async-trait = { version = "0.1.89", default-features = false }
+hickory-server = { version = "0.26.1", default-features = false }
+hickory-proto = { version = "0.26.1", default-features = false, features = [
+    "std",
+] }
+metrics = { version = "0.24.6", default-features = false }
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = [
+    "http-listener",
+] }
+governor = { version = "0.10", default-features = false, features = [
+    "dashmap",
+    "quanta",
+    "std",
+] }
+toml = { version = "1", default-features = false, features = [
+    "display",
+    "serde",
+    "std",
+] }
 
 [dev-dependencies]
-temp-env = "0.3"
+temp-env = { version = "0.3", default-features = false }
 
 [build-dependencies]
-vergen-gitcl = { version = "9.1", features = ["build"] }
+vergen-gitcl = { version = "9.1", default-features = false, features = ["build"] }
 
 [lints.rust]
 unsafe_code = "forbid"

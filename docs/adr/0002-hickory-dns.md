@@ -1,4 +1,4 @@
-# ADR 0002: Use hickory-dns for DNS Server
+# ADR 0002: Use Hickory DNS for DNS Server
 
 ## Status
 
@@ -10,7 +10,7 @@ We need to serve DNS A/AAAA records to clients querying for Zcash peers.
 
 ## Decision
 
-Use the `hickory-dns` crate, formerly trust-dns, for DNS serving. The seeder is authoritative for the exact configured `dns.domain`: A/AAAA queries return servable peers, SOA/NS queries return synthesized zone metadata, unsupported exact-name queries return NODATA with SOA, deeper in-zone names return NODATA with SOA, and out-of-zone names return REFUSED.
+Use Hickory DNS's `hickory-server` and `hickory-proto` crates, formerly trust-dns, for DNS serving. The seeder is authoritative for the exact configured `dns.domain`: A/AAAA queries return servable peers when that address family has entries, empty A/AAAA families return NODATA with SOA, SOA/NS queries return synthesized zone metadata, unsupported exact-name queries return NODATA with SOA, deeper in-zone names return NODATA with SOA, and out-of-zone names return REFUSED.
 
 ## Rationale
 
@@ -37,4 +37,4 @@ Use the `hickory-dns` crate, formerly trust-dns, for DNS serving. The seeder is 
 ## Alternatives Considered
 
 - Custom DNS parser: rejected because it is too complex, error-prone, and creates an RFC-compliance burden
-- trust-dns: not applicable because hickory-dns is the successor
+- trust-dns: not applicable because Hickory DNS is the successor

@@ -23,4 +23,4 @@ A DNS seeder for Zcash that:
 - Implements rate limiting to prevent DDoS abuse
 - Provides Prometheus metrics
 
-Built with Rust using `zebra-network` and `hickory-dns`.
+Built with Rust using `zebra-network` and Hickory DNS.

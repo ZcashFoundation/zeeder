@@ -88,14 +88,8 @@ impl SeedZone {
             reason = "RecordType has many variants; the seeder serves only A and AAAA"
         )]
         match record_type {
-            RecordType::A => DnsAnswer::PeerAddresses {
-                record_type_label: RECORD_TYPE_A,
-                peers: &servable_peers.ipv4,
-            },
-            RecordType::AAAA => DnsAnswer::PeerAddresses {
-                record_type_label: RECORD_TYPE_AAAA,
-                peers: &servable_peers.ipv6,
-            },
+            RecordType::A => resolve_peer_answer(RECORD_TYPE_A, &servable_peers.ipv4),
+            RecordType::AAAA => resolve_peer_answer(RECORD_TYPE_AAAA, &servable_peers.ipv6),
             RecordType::NS => DnsAnswer::Nameserver,
             RecordType::SOA => DnsAnswer::StartOfAuthority,
             _ => DnsAnswer::NoData,
@@ -156,6 +150,20 @@ enum DnsAnswer<'a> {
         record_type_label: &'static str,
         peers: &'a [PeerSocketAddr],
     },
+}
+
+fn resolve_peer_answer<'a>(
+    record_type_label: &'static str,
+    peers: &'a [PeerSocketAddr],
+) -> DnsAnswer<'a> {
+    if peers.is_empty() {
+        DnsAnswer::NoData
+    } else {
+        DnsAnswer::PeerAddresses {
+            record_type_label,
+            peers,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -434,10 +442,11 @@ mod tests {
 
     fn servable_peer_snapshot() -> ServablePeers {
         ServablePeers {
-            ipv4: vec![peer(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))],
+            ipv4: vec![peer(IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)))].into(),
             ipv6: vec![peer(IpAddr::V6(Ipv6Addr::new(
                 0x2001, 0x0db8, 0, 0, 0, 0, 0, 1,
-            )))],
+            )))]
+            .into(),
         }
     }
 
@@ -469,7 +478,7 @@ mod tests {
             answer,
             DnsAnswer::PeerAddresses {
                 record_type_label: RECORD_TYPE_A,
-                peers: servable_peers.ipv4.as_slice(),
+                peers: servable_peers.ipv4.as_ref(),
             }
         );
         Ok(())
@@ -503,7 +512,7 @@ mod tests {
             answer,
             DnsAnswer::PeerAddresses {
                 record_type_label: RECORD_TYPE_A,
-                peers: servable_peers.ipv4.as_slice(),
+                peers: servable_peers.ipv4.as_ref(),
             }
         );
         Ok(())
@@ -523,7 +532,7 @@ mod tests {
             answer,
             DnsAnswer::PeerAddresses {
                 record_type_label: RECORD_TYPE_A,
-                peers: servable_peers.ipv4.as_slice(),
+                peers: servable_peers.ipv4.as_ref(),
             }
         );
         Ok(())
@@ -612,8 +621,33 @@ mod tests {
             answer,
             DnsAnswer::PeerAddresses {
                 record_type_label: RECORD_TYPE_AAAA,
-                peers: servable_peers.ipv6.as_slice(),
+                peers: servable_peers.ipv6.as_ref(),
             }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_apex_peer_families_return_no_data() -> TestResult {
+        let servable_peers = ServablePeers::default();
+
+        assert_eq!(
+            answer_for(
+                "mainnet.seeder.test",
+                "mainnet.seeder.test",
+                RecordType::A,
+                &servable_peers,
+            )?,
+            DnsAnswer::NoData
+        );
+        assert_eq!(
+            answer_for(
+                "mainnet.seeder.test",
+                "mainnet.seeder.test",
+                RecordType::AAAA,
+                &servable_peers,
+            )?,
+            DnsAnswer::NoData
         );
         Ok(())
     }
@@ -699,8 +733,8 @@ mod tests {
         let v6 = IpAddr::V6(Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 1));
 
         let servable_peers = ServablePeers {
-            ipv4: vec![peer(v4a), peer(v4b)],
-            ipv6: vec![peer(v6)],
+            ipv4: vec![peer(v4a), peer(v4b)].into(),
+            ipv6: vec![peer(v6)].into(),
         };
 
         let request_handler = request_handler(servable_peers, "mainnet.seeder.test", 600, None)?;
@@ -769,6 +803,32 @@ mod tests {
             "in-zone subdomain should include SOA authority"
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn empty_exact_name_peer_family_includes_soa_authority() -> TestResult {
+        let servable_peers = ServablePeers {
+            ipv4: Vec::new().into(),
+            ipv6: Vec::new().into(),
+        };
+        let request_handler = request_handler(servable_peers, "mainnet.seeder.test", 600, None)?;
+
+        let response =
+            required_answer_message(&request_handler, "mainnet.seeder.test", RecordType::AAAA)
+                .await?;
+
+        assert!(
+            response.answers.is_empty(),
+            "empty peer family should not return address records"
+        );
+        assert!(
+            response
+                .authorities
+                .iter()
+                .any(|record| matches!(&record.data, RData::SOA(_))),
+            "empty peer family should include SOA authority"
+        );
         Ok(())
     }
 }

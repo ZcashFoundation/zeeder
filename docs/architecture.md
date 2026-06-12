@@ -6,7 +6,7 @@ zebra-seeder is a DNS seeder for Zcash that crawls the network and serves DNS re
 
 ```mermaid
 graph TD
-    A[DNS Client] -->|UDP Query| B[hickory-dns Server]
+    A[DNS Client] -->|UDP Query| B[Hickory DNS Server]
     B --> C[Rate Limiter]
     C -->|Check IP| D{Allow?}
     D -->|Yes| E[DnsRequestHandler]
@@ -22,7 +22,7 @@ graph TD
 ### Core Components
 
 - **zebra-network**: Handles Zcash P2P networking and peer discovery
-- **hickory-dns**: DNS server framework
+- **Hickory DNS**: DNS server framework via `hickory-server` and `hickory-proto`
 - **Rate Limiter**: Per-IP rate limiting using governor crate
 - **Servable Peer Cache**: Lock-free cache of servable peers, updated every 5 seconds
 - **Address Book**: Thread-safe peer storage managed by zebra-network
@@ -50,12 +50,15 @@ sequenceDiagram
     alt Rate limit OK
         Rate Limiter->>DnsRequestHandler: Process query
         DnsRequestHandler->>DnsRequestHandler: Classify query name and type
-        alt Exact seed name, A/AAAA
+        alt Exact seed name, A/AAAA with peers
             DnsRequestHandler->>Servable Peer Cache: Read cached peers
             Note over DnsRequestHandler,Servable Peer Cache: Lock-free read via watch channel
             Servable Peer Cache-->>DnsRequestHandler: IPv4 or IPv6 peer list
             DnsRequestHandler-->>DNS Server: A/AAAA records
             DNS Server-->>Client: Response (up to 25 IPs)
+        else Exact seed name, A/AAAA without peers
+            DnsRequestHandler-->>DNS Server: NODATA + SOA
+            DNS Server-->>Client: Empty NOERROR with SOA
         else Exact seed name, SOA/NS
             DnsRequestHandler-->>DNS Server: Zone metadata record
             DNS Server-->>Client: SOA or NS
@@ -78,9 +81,10 @@ sequenceDiagram
 3. If rate-limited: packet dropped silently (no amplification)
 4. If allowed: classify the query against `dns.domain`
 5. For exact `dns.domain` A/AAAA queries, read cached addresses (lock-free via watch channel)
-6. Return pre-filtered and shuffled peers, or static SOA/NS metadata for SOA/NS queries
-7. Return NODATA plus SOA for unsupported exact-name queries or deeper in-zone labels
-8. Return REFUSED for names outside the configured seed domain
+6. Return pre-filtered and shuffled peers, or NODATA plus SOA if that address family has no servable peers
+7. Return static SOA/NS metadata for SOA/NS queries
+8. Return NODATA plus SOA for unsupported exact-name queries or deeper in-zone labels
+9. Return REFUSED for names outside the configured seed domain
 
 ### Address Cache Updates
 
@@ -149,7 +153,7 @@ sequenceDiagram
 
 ---
 
-### hickory-dns Server
+### Hickory DNS Server
 
 **What:** Async DNS server framework (formerly trust-dns)
 
@@ -161,7 +165,7 @@ sequenceDiagram
 **Our usage:**
 - Implement `RequestHandler` trait via `DnsRequestHandler`
 - Handle A, AAAA, SOA, and NS queries at the configured seed name
-- Return NODATA plus SOA for unsupported exact-name queries and deeper in-zone labels
+- Return NODATA plus SOA for empty A/AAAA families, unsupported exact-name queries, and deeper in-zone labels
 - Return REFUSED for unauthorized domains
 
 ---
@@ -263,7 +267,7 @@ Prometheus metrics are exposed on the configured metrics endpoint. Architecture-
 ## Architecture Decision Records
 
 - [ADR 0001: Use zebra-network for Peer Discovery](adr/0001-zebra-network.md)
-- [ADR 0002: Use hickory-dns for DNS Server](adr/0002-hickory-dns.md)
+- [ADR 0002: Use Hickory DNS for DNS Server](adr/0002-hickory-dns.md)
 - [ADR 0003: Implement Per-IP Rate Limiting](adr/0003-rate-limiting.md)
 - [ADR 0004: Peer Servability and Protocol-Version Floor](adr/0004-peer-servability.md)
 
@@ -273,5 +277,5 @@ Prometheus metrics are exposed on the configured metrics endpoint. Architecture-
 2. **Availability**: Mutex poisoning recovery ensures continued operation
 3. **Performance**: Concurrent data structures, early limiting, minimal allocations
 4. **Observability**: Comprehensive metrics for monitoring
-5. **Simplicity**: Leverage proven libraries (zebra-network, hickory-dns)
+5. **Simplicity**: Leverage proven libraries (zebra-network, Hickory DNS)
 6. **Configurability**: All key parameters are configurable

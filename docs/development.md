@@ -370,7 +370,7 @@ RUST_LOG=zebra_seeder::dns::request_handler=debug cargo run start
 ## Useful Resources
 
 - [Zebra Project](https://github.com/ZcashFoundation/zebra) - Zcash full node
-- [hickory-dns Docs](https://docs.rs/hickory-dns/) - DNS server library
+- [hickory-server Docs](https://docs.rs/hickory-server/) - DNS server library
 - [governor Docs](https://docs.rs/governor/) - Rate limiting
 - [Zcash Protocol Spec](https://zips.z.cash/protocol/protocol.pdf)
 
