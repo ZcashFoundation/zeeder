@@ -17,6 +17,8 @@ use crate::{
 /// Run the seeder until the DNS server exits or the process receives Ctrl+C.
 pub(crate) async fn run(config: SeederConfig) -> Result<()> {
     tracing::info!("Initializing zebra-network...");
+    let network_config = config.crawler.network_config();
+    let network = network_config.network.clone();
 
     // Dummy inbound service that rejects everything.
     let inbound_service = tower::service_fn(|_req: zebra_network::Request| async move {
@@ -37,13 +39,11 @@ pub(crate) async fn run(config: SeederConfig) -> Result<()> {
 
     // Pin a chain tip at the current network upgrade so zebra-network's
     // handshake rejects peers advertising an outdated protocol version.
-    let tip = chain_tip::SeederChainTip::at_current_upgrade(&config.network.network);
-    let min_protocol_version = zebra_network::Version::min_remote_for_height(
-        &config.network.network,
-        tip.best_tip_height(),
-    );
+    let tip = chain_tip::SeederChainTip::at_current_upgrade(&network);
+    let min_protocol_version =
+        zebra_network::Version::min_remote_for_height(&network, tip.best_tip_height());
     tracing::info!(
-        network = %config.network.network,
+        network = %network,
         %min_protocol_version,
         "enforcing peer protocol-version floor"
     );
@@ -51,35 +51,35 @@ pub(crate) async fn run(config: SeederConfig) -> Result<()> {
     gauge!(
         "seeder_build_info",
         "version" => env!("CARGO_PKG_VERSION"),
-        "network" => config.network.network.to_string(),
+        "network" => network.to_string(),
     )
     .set(1.0);
 
     let (peer_set, address_book, _misbehavior_sender) =
-        zebra_network::init(config.network.clone(), inbound_service, tip, user_agent).await;
+        zebra_network::init(network_config, inbound_service, tip, user_agent).await;
     // Keep the peer set in scope so zebra-network keeps crawling for the
     // lifetime of the seeder.
 
     let rate_limiter = config.rate_limit.as_ref().map(RateLimiter::new);
 
-    tracing::info!("Initializing DNS server on {}", config.dns_listen_addr);
+    tracing::info!("Initializing DNS server on {}", config.dns.listen_addr);
 
-    let servable_peers = address_cache::spawn(address_book.clone(), config.network.network.clone());
+    let servable_peers = address_cache::spawn(address_book.clone(), network);
 
     let request_handler = DnsRequestHandler::new(
         servable_peers,
-        config.seed_domain.clone(),
-        config.dns_ttl,
+        &config.dns.domain,
+        config.dns.ttl,
         rate_limiter,
-    );
+    )?;
     let mut server = Server::new(request_handler);
 
-    let udp_socket = UdpSocket::bind(config.dns_listen_addr)
+    let udp_socket = UdpSocket::bind(config.dns.listen_addr)
         .await
         .wrap_err("failed to bind UDP socket")?;
     server.register_socket(udp_socket);
 
-    let tcp_listener = TcpListener::bind(config.dns_listen_addr)
+    let tcp_listener = TcpListener::bind(config.dns.listen_addr)
         .await
         .wrap_err("failed to bind TCP listener")?;
     server.register_listener(tcp_listener, Duration::from_secs(5), 32);

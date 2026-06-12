@@ -4,29 +4,18 @@
 use color_eyre::eyre::Result;
 use config::{Config, Environment, File};
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use zebra_chain::parameters::Network;
 
 /// Configuration for the Zebra seeder.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct SeederConfig {
-    /// The Zebra network configuration.
-    pub(crate) network: zebra_network::Config,
+    /// Zebra-network crawler configuration.
+    pub(crate) crawler: CrawlerConfig,
 
-    /// The socket address Hickory DNS will bind to.
-    ///
-    /// Defaults to `0.0.0.0:53`.
-    pub(crate) dns_listen_addr: SocketAddr,
-
-    /// The domain name the seeder is authoritative for.
-    pub(crate) seed_domain: String,
-
-    /// DNS response TTL (time to live) in seconds.
-    ///
-    /// Controls how long clients cache DNS responses. Lower values mean fresher
-    /// data but more queries; higher values reduce load but propagate updates
-    /// more slowly. Defaults to `600` (10 minutes).
-    pub(crate) dns_ttl: u32,
+    /// DNS server configuration.
+    pub(crate) dns: DnsConfig,
 
     /// Prometheus metrics configuration. If `None`, metrics are disabled.
     pub(crate) metrics: Option<MetricsConfig>,
@@ -36,9 +25,84 @@ pub(crate) struct SeederConfig {
     pub(crate) rate_limit: Option<RateLimitConfig>,
 }
 
+/// Zebra-network crawler configuration exposed by the seeder.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CrawlerConfig {
+    /// The Zcash network to crawl.
+    pub(crate) network: CrawlerNetwork,
+}
+
+impl CrawlerConfig {
+    /// Build the underlying zebra-network configuration.
+    pub(crate) fn network_config(&self) -> zebra_network::Config {
+        let network = self.network.zcash_network();
+        let listen_addr =
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), network.default_port());
+
+        zebra_network::Config {
+            network,
+            listen_addr,
+            external_addr: None,
+            max_connections_per_ip: 1,
+            ..zebra_network::Config::default()
+        }
+    }
+}
+
+/// Zcash network choices supported by the seeder crawler.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) enum CrawlerNetwork {
+    /// The production Zcash network.
+    #[default]
+    Mainnet,
+
+    /// The default public Zcash test network.
+    Testnet,
+}
+
+impl CrawlerNetwork {
+    fn zcash_network(self) -> Network {
+        match self {
+            Self::Mainnet => Network::Mainnet,
+            Self::Testnet => Network::new_default_testnet(),
+        }
+    }
+}
+
+/// DNS server configuration.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct DnsConfig {
+    /// The socket address Hickory DNS will bind to.
+    ///
+    /// Defaults to `0.0.0.0:53`.
+    pub(crate) listen_addr: SocketAddr,
+
+    /// The domain name the seeder is authoritative for.
+    pub(crate) domain: String,
+
+    /// DNS response TTL (time to live) in seconds.
+    ///
+    /// Controls how long clients cache DNS responses. Lower values mean fresher
+    /// data but more queries; higher values reduce load but propagate updates
+    /// more slowly. Defaults to `600` (10 minutes).
+    pub(crate) ttl: u32,
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self {
+            listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 53),
+            domain: "mainnet.seeder.example.com".to_string(),
+            ttl: 600,
+        }
+    }
+}
+
 /// Configuration for Prometheus metrics.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct MetricsConfig {
     /// The socket address to expose Prometheus metrics on. Defaults to
     /// `0.0.0.0:9999`.
@@ -55,7 +119,7 @@ impl Default for MetricsConfig {
 
 /// Configuration for DNS query rate limiting.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub(crate) struct RateLimitConfig {
     /// Maximum queries per second per IP address. Defaults to `10`.
     pub(crate) queries_per_second: u32,
@@ -77,10 +141,8 @@ impl Default for RateLimitConfig {
 impl Default for SeederConfig {
     fn default() -> Self {
         Self {
-            network: zebra_network::Config::default(),
-            dns_listen_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 53),
-            seed_domain: "mainnet.seeder.example.com".to_string(),
-            dns_ttl: 600,
+            crawler: CrawlerConfig::default(),
+            dns: DnsConfig::default(),
             metrics: None,
             rate_limit: Some(RateLimitConfig::default()),
         }
@@ -123,15 +185,21 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = SeederConfig::default();
-        assert_eq!(config.dns_listen_addr.to_string(), "0.0.0.0:53");
-        assert_eq!(config.seed_domain, "mainnet.seeder.example.com");
-        assert_eq!(config.dns_ttl, 600);
+        assert_eq!(config.dns.listen_addr.to_string(), "0.0.0.0:53");
+        assert_eq!(config.dns.domain, "mainnet.seeder.example.com");
+        assert_eq!(config.dns.ttl, 600);
     }
 
     #[test]
     fn test_network_config_defaults() {
         let config = SeederConfig::default();
-        assert_eq!(config.network.network.to_string(), "Mainnet");
+        assert_eq!(config.crawler.network, CrawlerNetwork::Mainnet);
+        assert_eq!(
+            config.crawler.network_config().listen_addr.port(),
+            Network::Mainnet.default_port()
+        );
+        assert!(config.crawler.network_config().external_addr.is_none());
+        assert_eq!(config.crawler.network_config().max_connections_per_ip, 1);
     }
 
     #[test]
@@ -155,34 +223,89 @@ mod tests {
     #[test]
     fn test_env_overrides() -> TestResult {
         let config = temp_env::with_var(
-            "ZEBRA_SEEDER__SEED_DOMAIN",
+            "ZEBRA_SEEDER__DNS__DOMAIN",
             Some("test.example.com"),
             || SeederConfig::load_with_env(None),
         )?;
-        assert_eq!(config.seed_domain, "test.example.com");
+        assert_eq!(config.dns.domain, "test.example.com");
         Ok(())
+    }
+
+    #[test]
+    fn flat_dns_env_key_is_rejected() {
+        let config = temp_env::with_var("ZEBRA_SEEDER__DNS_TTL", Some("300"), || {
+            SeederConfig::load_with_env(None)
+        });
+
+        assert!(config.is_err(), "flat DNS config key should fail");
+    }
+
+    #[test]
+    fn upstream_network_env_key_is_rejected() {
+        let config = temp_env::with_var("ZEBRA_SEEDER__NETWORK__NETWORK", Some("Testnet"), || {
+            SeederConfig::load_with_env(None)
+        });
+
+        assert!(
+            config.is_err(),
+            "upstream zebra-network config key should fail"
+        );
+    }
+
+    #[test]
+    fn unknown_dns_env_key_is_rejected() {
+        let config = temp_env::with_var("ZEBRA_SEEDER__DNS__TTTL", Some("300"), || {
+            SeederConfig::load_with_env(None)
+        });
+
+        assert!(config.is_err(), "unknown DNS config key should fail");
+    }
+
+    #[test]
+    fn unknown_metrics_env_key_is_rejected() {
+        let config = temp_env::with_var(
+            "ZEBRA_SEEDER__METRICS__ENDPOINT_ADRR",
+            Some("127.0.0.1:0"),
+            || SeederConfig::load_with_env(None),
+        );
+
+        assert!(config.is_err(), "unknown metrics config key should fail");
+    }
+
+    #[test]
+    fn unknown_rate_limit_env_key_is_rejected() {
+        let config =
+            temp_env::with_var("ZEBRA_SEEDER__RATE_LIMIT__BURSTT_SIZE", Some("100"), || {
+                SeederConfig::load_with_env(None)
+            });
+
+        assert!(config.is_err(), "unknown rate-limit config key should fail");
     }
 
     #[test]
     fn test_config_loading_from_env_overrides_network() -> TestResult {
         let config = temp_env::with_vars(
             [
-                ("ZEBRA_SEEDER__NETWORK__NETWORK", Some("Testnet")),
-                ("ZEBRA_SEEDER__DNS_LISTEN_ADDR", Some("0.0.0.0:1053")),
+                ("ZEBRA_SEEDER__CRAWLER__NETWORK", Some("Testnet")),
+                ("ZEBRA_SEEDER__DNS__LISTEN_ADDR", Some("0.0.0.0:1053")),
             ],
             || SeederConfig::load_with_env(None),
         )?;
-        assert_eq!(config.network.network.to_string(), "Testnet");
-        assert_eq!(config.dns_listen_addr.port(), 1053);
+        assert_eq!(config.crawler.network, CrawlerNetwork::Testnet);
+        assert_eq!(config.dns.listen_addr.port(), 1053);
+        assert_eq!(
+            config.crawler.network_config().listen_addr.port(),
+            Network::new_default_testnet().default_port()
+        );
         Ok(())
     }
 
     #[test]
     fn test_dns_ttl_from_env() -> TestResult {
-        let config = temp_env::with_var("ZEBRA_SEEDER__DNS_TTL", Some("300"), || {
+        let config = temp_env::with_var("ZEBRA_SEEDER__DNS__TTL", Some("300"), || {
             SeederConfig::load_with_env(None)
         })?;
-        assert_eq!(config.dns_ttl, 300);
+        assert_eq!(config.dns.ttl, 300);
         Ok(())
     }
 

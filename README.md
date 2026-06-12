@@ -60,11 +60,11 @@ You can create a `.env` file in the project root to persist environment variable
 
 ```bash
 # Example .env content
-ZEBRA_SEEDER__NETWORK__NETWORK="Mainnet"
+ZEBRA_SEEDER__CRAWLER__NETWORK="Mainnet"
 # note: For production access, DNS server will need to be exposed on UDP/53, which is a privileged port.  Alternately, port forwarding can be used to forward production traffic to the seeder.
-ZEBRA_SEEDER__DNS_LISTEN_ADDR="0.0.0.0:1053"
-ZEBRA_SEEDER__DNS_TTL="600"
-ZEBRA_SEEDER__SEED_DOMAIN="mainnet.seeder.example.com"
+ZEBRA_SEEDER__DNS__LISTEN_ADDR="0.0.0.0:1053"
+ZEBRA_SEEDER__DNS__TTL="600"
+ZEBRA_SEEDER__DNS__DOMAIN="mainnet.seeder.example.com"
 ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR="0.0.0.0:9999"
 ```
 
@@ -72,10 +72,10 @@ ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR="0.0.0.0:9999"
 
 | Parameter | Environment Variable | Default | Description |
 |-----------|---------------------|---------|-------------|
-| `dns_listen_addr` | `ZEBRA_SEEDER__DNS_LISTEN_ADDR` | `0.0.0.0:53` | DNS server listening address and port |
-| `dns_ttl` | `ZEBRA_SEEDER__DNS_TTL` | `600` | DNS response TTL in seconds. Controls how long clients cache responses. Lower values (e.g., 300) provide fresher data but increase query load. Higher values (e.g., 1800) reduce load but slower updates. |
-| `seed_domain` | `ZEBRA_SEEDER__SEED_DOMAIN` | `mainnet.seeder.example.com` | Domain name the seeder is authoritative for |
-| `network.network` | `ZEBRA_SEEDER__NETWORK__NETWORK` | `Mainnet` | Zcash network to connect to (`Mainnet` or `Testnet`) |
+| `dns.listen_addr` | `ZEBRA_SEEDER__DNS__LISTEN_ADDR` | `0.0.0.0:53` | DNS server listening address and port |
+| `dns.ttl` | `ZEBRA_SEEDER__DNS__TTL` | `600` | DNS response TTL in seconds. Controls how long clients cache responses. Lower values (e.g., 300) provide fresher data but increase query load. Higher values (e.g., 1800) reduce load but slower updates. |
+| `dns.domain` | `ZEBRA_SEEDER__DNS__DOMAIN` | `mainnet.seeder.example.com` | Domain name the seeder is authoritative for |
+| `crawler.network` | `ZEBRA_SEEDER__CRAWLER__NETWORK` | `Mainnet` | Zcash network to crawl (`Mainnet` or `Testnet`) |
 | `metrics.endpoint_addr` | `ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR` | (disabled) | Prometheus metrics endpoint address. Omit to disable metrics. |
 | `rate_limit.queries_per_second` | `ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Maximum DNS queries per second per IP address. Prevents DNS amplification attacks. |
 | `rate_limit.burst_size` | `ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity for short traffic spikes (typically 2x the rate limit). |
@@ -155,4 +155,3 @@ This project is licensed under either of:
  * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
-

@@ -68,7 +68,7 @@ sequenceDiagram
 1. Client sends DNS query
 2. Rate limiter checks if IP is within limits
 3. If rate-limited: packet dropped silently (no amplification)
-4. If allowed: validate domain matches `seed_domain`
+4. If allowed: validate domain matches `dns.domain`
 5. Read from cached addresses (lock-free via watch channel)
 6. Return pre-filtered and shuffled peer list as DNS response
 

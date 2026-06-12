@@ -17,12 +17,12 @@ Prefix all variables with `ZEBRA_SEEDER__` and use double underscores for nestin
 
 ```bash
 # Core settings
-ZEBRA_SEEDER__DNS_LISTEN_ADDR="0.0.0.0:53"
-ZEBRA_SEEDER__SEED_DOMAIN="mainnet.seeder.example.com"
-ZEBRA_SEEDER__DNS_TTL="600"
+ZEBRA_SEEDER__DNS__LISTEN_ADDR="0.0.0.0:53"
+ZEBRA_SEEDER__DNS__DOMAIN="mainnet.seeder.example.com"
+ZEBRA_SEEDER__DNS__TTL="600"
 
-# Network
-ZEBRA_SEEDER__NETWORK__NETWORK="Mainnet"  # or "Testnet"
+# Crawler
+ZEBRA_SEEDER__CRAWLER__NETWORK="Mainnet"  # or "Testnet"
 
 # Rate limiting (recommended for production)
 ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND="10"
@@ -46,11 +46,12 @@ cp .env-example.txt .env
 Example `config.toml`:
 
 ```toml
-dns_listen_addr = "0.0.0.0:53"
-seed_domain = "mainnet.seeder.example.com"
-dns_ttl = 600
+[dns]
+listen_addr = "0.0.0.0:53"
+domain = "mainnet.seeder.example.com"
+ttl = 600
 
-[network]
+[crawler]
 network = "Mainnet"
 
 [rate_limit]
@@ -67,10 +68,10 @@ Use with: `zebra-seeder start --config config.toml`
 
 | Parameter | Environment Variable | Default | Description |
 |-----------|---------------------|---------|-------------|
-| `dns_listen_addr` | `ZEBRA_SEEDER__DNS_LISTEN_ADDR` | `0.0.0.0:53` | DNS server address and port |
-| `dns_ttl` | `ZEBRA_SEEDER__DNS_TTL` | `600` | DNS response TTL in seconds |
-| `seed_domain` | `ZEBRA_SEEDER__SEED_DOMAIN` | `mainnet.seeder.example.com` | Authoritative domain |
-| `network.network` | `ZEBRA_SEEDER__NETWORK__NETWORK` | `Mainnet` | Zcash network (`Mainnet` or `Testnet`) |
+| `dns.listen_addr` | `ZEBRA_SEEDER__DNS__LISTEN_ADDR` | `0.0.0.0:53` | DNS server address and port |
+| `dns.ttl` | `ZEBRA_SEEDER__DNS__TTL` | `600` | DNS response TTL in seconds |
+| `dns.domain` | `ZEBRA_SEEDER__DNS__DOMAIN` | `mainnet.seeder.example.com` | Authoritative domain |
+| `crawler.network` | `ZEBRA_SEEDER__CRAWLER__NETWORK` | `Mainnet` | Zcash network (`Mainnet` or `Testnet`) |
 | `rate_limit.queries_per_second` | `ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP |
 | `rate_limit.burst_size` | `ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity |
 | `metrics.endpoint_addr` | `ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR` | (disabled) | Prometheus endpoint |
@@ -79,9 +80,10 @@ Use with: `zebra-seeder start --config config.toml`
 
 ### Prerequisites
 
-- **DNS delegation**: Your `seed_domain` must have NS records pointing to your server
+- **DNS delegation**: Your configured `dns.domain` must have NS records pointing to your server
 - **Port 53**: UDP (and optionally TCP) access required
-- **Outbound connectivity**: Access to Zcash P2P network (port 8233 for mainnet, 18233 for testnet)
+- **Outbound connectivity**: Access to the Zcash P2P network (port 8233 for mainnet, 18233 for testnet)
+- **Crawler listener**: The crawler binds `[::]:8233` on mainnet and `[::]:18233` on testnet. Expose that listener only if you want the seeder to accept inbound P2P connections.
 - **Resources**: ~100MB RAM, minimal CPU
 
 ### Docker Deployment (Recommended)
@@ -102,9 +104,9 @@ services:
       - "53:53/udp"
       - "9999:9999"  # metrics
     environment:
-      ZEBRA_SEEDER__SEED_DOMAIN: "mainnet.seeder.example.com"
-      ZEBRA_SEEDER__NETWORK__NETWORK: "Mainnet"
-      ZEBRA_SEEDER__DNS_TTL: "600"
+      ZEBRA_SEEDER__DNS__DOMAIN: "mainnet.seeder.example.com"
+      ZEBRA_SEEDER__CRAWLER__NETWORK: "Mainnet"
+      ZEBRA_SEEDER__DNS__TTL: "600"
       ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR: "0.0.0.0:9999"
     volumes:
       - seeder-cache:/root/.cache/zebra/network  # Persist address book
@@ -146,8 +148,8 @@ After=network.target
 Type=simple
 User=zebra
 WorkingDirectory=/opt/zebra-seeder
-Environment="ZEBRA_SEEDER__SEED_DOMAIN=mainnet.seeder.example.com"
-Environment="ZEBRA_SEEDER__NETWORK__NETWORK=Mainnet"
+Environment="ZEBRA_SEEDER__DNS__DOMAIN=mainnet.seeder.example.com"
+Environment="ZEBRA_SEEDER__CRAWLER__NETWORK=Mainnet"
 Environment="ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR=0.0.0.0:9999"
 ExecStart=/opt/zebra-seeder/target/release/zebra-seeder start
 Restart=always

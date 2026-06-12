@@ -25,9 +25,9 @@ cargo build
 cp .env-example.txt .env
 
 # Edit .env for testnet (uses port 1053 to avoid requiring root)
-# ZEBRA_SEEDER__DNS_LISTEN_ADDR="0.0.0.0:1053"
-# ZEBRA_SEEDER__NETWORK__NETWORK="Testnet"
-# ZEBRA_SEEDER__SEED_DOMAIN="testnet.seeder.example.com"
+# ZEBRA_SEEDER__DNS__LISTEN_ADDR="0.0.0.0:1053"
+# ZEBRA_SEEDER__CRAWLER__NETWORK="Testnet"
+# ZEBRA_SEEDER__DNS__DOMAIN="testnet.seeder.example.com"
 
 # Run
 cargo run start
