@@ -1,45 +1,122 @@
 # Operations Guide
 
-Complete guide for configuring, deploying, and operating zeeder.
+This guide covers production-style deployment, DNS delegation, service
+configuration, monitoring, and routine maintenance for Zeeder.
+
+Zeeder runs one crawler and serves one DNS seed domain per process. A mainnet
+seeder and a testnet seeder should normally be separate services, with separate
+DNS names, separate cache volumes, and separate metrics endpoints. You can run
+both services on the same infrastructure, but each service still needs its own
+public address on port 53 unless a future version adds multi-zone serving.
+
+## Deployment Model
+
+### One Service Per Network
+
+Run one Zeeder process for each Zcash network you want to serve:
+
+| Network | Example seed domain | Example nameserver | Default P2P port |
+|---------|---------------------|--------------------|------------------|
+| Mainnet | `mainnet.seeder.example.com` | `ns-mainnet.seeder.example.com` | `8233` |
+| Testnet | `testnet.seeder.example.com` | `ns-testnet.seeder.example.com` | `18233` |
+
+This keeps the operational boundary clear. Each process has one
+`crawler.network`, one `dns.domain`, and one peer cache. If mainnet has a bad
+cache, a high query rate, or a P2P connectivity issue, testnet does not share
+that state.
+
+### Public Addressing
+
+A DNS seeder is an authoritative nameserver. Recursive resolvers must be able to
+send UDP and TCP DNS queries directly to the seeder on port 53.
+
+Use this model for production:
+
+1. Give each Zeeder service a static public IP address.
+2. Publish an A or AAAA record for that service's `dns.nameserver`.
+3. Delegate the exact `dns.domain` to that nameserver.
+4. Add more independent seeders by adding more NS records.
+
+Do not rely on HTTP load balancers, CDNs, Cloud Run, or reverse proxies for the
+authoritative DNS path. DNS already has a load-distribution mechanism: publish
+multiple NS records that point at independent seeders. A network-level load
+balancer can work only if it passes UDP and TCP 53 correctly, but it adds a
+shared failure point that DNS delegation can usually avoid.
+
+### Mainnet And Testnet Separation
+
+Use separate mainnet and testnet IPs by default. Some operators also keep the
+two networks in separate subnets or projects so firewall policy, monitoring,
+and incident response can be managed independently.
+
+Sharing a VPC, subnet, or CIDR is acceptable when the operator wants a smaller
+deployment footprint, but keep these resources separate:
+
+- public IP address per Zeeder service
+- service process or container
+- peer cache volume
+- metrics endpoint
+- DNS delegation record
+
+Do not point mainnet and testnet delegations at the same public IP unless a
+single process on that IP can serve both domains. Current Zeeder cannot do that;
+it serves one configured `dns.domain` and refuses names outside that domain.
+
+### High Availability
+
+For production, run at least 2 independent mainnet seeders in different zones or
+regions. Do the same for testnet if testnet availability matters to your users.
+
+Example mainnet delegation with 3 seeders:
+
+```bind
+mainnet.seeder.example.com. IN NS ns1-mainnet.seeder.example.com.
+mainnet.seeder.example.com. IN NS ns2-mainnet.seeder.example.com.
+mainnet.seeder.example.com. IN NS ns3-mainnet.seeder.example.com.
+
+ns1-mainnet.seeder.example.com. IN A 203.0.113.10
+ns2-mainnet.seeder.example.com. IN A 203.0.113.20
+ns3-mainnet.seeder.example.com. IN A 198.51.100.30
+```
+
+Each seeder crawls independently. The DNS client or recursive resolver chooses
+which nameserver to query, and it can fail over if one nameserver is unavailable.
 
 ## Configuration
 
 ### Configuration Sources
 
 Configuration is loaded in priority order:
-1. **Environment variables** (`ZEEDER__*`) - highest priority
-2. **TOML config file** - medium priority
-3. **Hardcoded defaults** - lowest priority
+
+1. Environment variables (`ZEEDER__*`)
+2. TOML config file
+3. Hardcoded defaults
+
+The highest-priority source wins. Zeeder rejects unknown config fields, so a
+typo such as `dns.tttl` fails startup instead of silently using a default.
 
 ### Environment Variables
 
-Prefix all variables with `ZEEDER__` and use double underscores for nesting. Zeeder does not use Zebra's `ZEBRA_` namespace, so colocated `zebrad` processes can keep their own `ZEBRA_*` configuration without reading Zeeder settings.
+Prefix all variables with `ZEEDER__` and use double underscores for nesting.
+Zeeder does not use Zebra's `ZEBRA_` namespace, so colocated `zebrad` processes
+can keep their own `ZEBRA_*` configuration without reading Zeeder settings.
 
 ```bash
 # Core settings
 ZEEDER__DNS__LISTEN_ADDR="0.0.0.0:53"
 ZEEDER__DNS__DOMAIN="mainnet.seeder.example.com"
-ZEEDER__DNS__NAMESERVER="ns.seeder.example.com"
+ZEEDER__DNS__NAMESERVER="ns-mainnet.seeder.example.com"
 ZEEDER__DNS__TTL="600"
 
 # Crawler
 ZEEDER__CRAWLER__NETWORK="Mainnet"  # or "Testnet"
 
-# Rate limiting (recommended for production)
+# Rate limiting
 ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND="10"
 ZEEDER__RATE_LIMIT__BURST_SIZE="20"
 
-# Metrics (optional)
-ZEEDER__METRICS__ENDPOINT_ADDR="0.0.0.0:9999"
-```
-
-### `.env` File
-
-Create `.env` in project root (see [`.env.example`](../.env.example)):
-
-```bash
-cp .env.example .env
-# Edit .env with your values
+# Metrics
+ZEEDER__METRICS__ENDPOINT_ADDR="127.0.0.1:9999"
 ```
 
 The `.env` file is optional. If it exists, it must parse successfully or the
@@ -47,13 +124,14 @@ seeder exits before loading configuration.
 
 ### TOML Config File
 
-Example `config.toml`:
+Use a TOML file when you want source-controlled config or systemd `ExecStart`
+arguments instead of many environment variables.
 
 ```toml
 [dns]
 listen_addr = "0.0.0.0:53"
 domain = "mainnet.seeder.example.com"
-nameserver = "ns.seeder.example.com"
+nameserver = "ns-mainnet.seeder.example.com"
 ttl = 600
 
 [crawler]
@@ -64,10 +142,14 @@ queries_per_second = 10
 burst_size = 20
 
 [metrics]
-endpoint_addr = "0.0.0.0:9999"
+endpoint_addr = "127.0.0.1:9999"
 ```
 
-Use with: `zeeder start --config config.toml`
+Run with:
+
+```bash
+zeeder start --config /etc/zeeder/mainnet.toml
+```
 
 ### Configuration Reference
 
@@ -82,173 +164,327 @@ Use with: `zeeder start --config config.toml`
 | `rate_limit.burst_size` | `ZEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity; must be greater than 0 |
 | `metrics.endpoint_addr` | `ZEEDER__METRICS__ENDPOINT_ADDR` | (disabled) | Prometheus endpoint |
 
-## Deployment
+### Nameserver Rules
 
-### Prerequisites
+`dns.nameserver` must be outside `dns.domain`. For example, if
+`dns.domain = "mainnet.seeder.example.com"`, use a nameserver such as
+`ns-mainnet.seeder.example.com`, not `ns.mainnet.seeder.example.com`.
 
-- **DNS delegation**: Your configured `dns.domain` must delegate to `dns.nameserver`, and `dns.nameserver` must resolve outside `dns.domain`
-- **Port 53**: UDP (and optionally TCP) access required
-- **Outbound connectivity**: Access to the Zcash P2P network (port 8233 for mainnet, 18233 for testnet)
-- **Crawler listener**: The crawler binds `[::]:8233` on mainnet and `[::]:18233` on testnet. Expose that listener only if you want the seeder to accept inbound P2P connections.
-- **Resources**: ~100MB RAM, minimal CPU
+This rule keeps the authority self-consistent. Zeeder answers A and AAAA only
+for the exact seed domain, so it does not serve glue or address records for a
+nameserver hostname inside that same seed domain.
 
-### Docker Deployment (Recommended)
+## Docker Deployment
 
-**1. Build image:**
-```bash
-docker build -t zeeder .
-```
+Docker is the simplest deployment path when the host has Docker or Docker
+Compose available. The container runs as a non-root user and listens on port
+1053 inside the container, while the host maps public port 53 to that internal
+port.
 
-**2. Run with docker-compose:**
+### Single Mainnet Seeder
+
+Create `compose.mainnet.yml`:
+
 ```yaml
-version: "3.8"
+name: zeeder-mainnet
+
 services:
-  seeder:
+  mainnet:
     image: zeeder
     restart: unless-stopped
     ports:
       - "53:1053/udp"
       - "53:1053/tcp"
-      - "9999:9999/tcp"  # metrics
+      - "127.0.0.1:9999:9999/tcp"
+    volumes:
+      - zeeder-mainnet-cache:/cache
     environment:
-      ZEEDER__DNS__DOMAIN: "mainnet.seeder.example.com"
-      ZEEDER__DNS__NAMESERVER: "ns.seeder.example.com"
       ZEEDER__CRAWLER__NETWORK: "Mainnet"
       ZEEDER__DNS__LISTEN_ADDR: "0.0.0.0:1053"
+      ZEEDER__DNS__DOMAIN: "mainnet.seeder.example.com"
+      ZEEDER__DNS__NAMESERVER: "ns-mainnet.seeder.example.com"
       ZEEDER__DNS__TTL: "600"
       ZEEDER__METRICS__ENDPOINT_ADDR: "0.0.0.0:9999"
-    volumes:
-      - zeeder-cache:/cache
 
 volumes:
-  zeeder-cache:
+  zeeder-mainnet-cache:
 ```
 
-**3. Start:**
+Build and start:
+
 ```bash
-docker-compose up -d
+docker build -t zeeder .
+docker compose -f compose.mainnet.yml up -d
 ```
 
-**4. Verify:**
+Verify the container:
+
 ```bash
-dig @localhost mainnet.seeder.example.com A
+docker compose -f compose.mainnet.yml logs --tail=100 mainnet
+dig @127.0.0.1 mainnet.seeder.example.com SOA
+curl -s http://127.0.0.1:9999/metrics | grep 'zeeder_build_info'
 ```
 
-### Bare Metal Deployment
+### Mainnet And Testnet On One Host
 
-**1. Install Rust:**
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+If one host has 2 public IP addresses, bind each service to a different host IP
+on port 53. Replace the example IPs with addresses assigned to the host.
+
+```yaml
+name: zeeder-dual-network
+
+services:
+  mainnet:
+    image: zeeder
+    restart: unless-stopped
+    ports:
+      - "203.0.113.10:53:1053/udp"
+      - "203.0.113.10:53:1053/tcp"
+      - "127.0.0.1:9999:9999/tcp"
+    volumes:
+      - zeeder-mainnet-cache:/cache
+    environment:
+      ZEEDER__CRAWLER__NETWORK: "Mainnet"
+      ZEEDER__DNS__LISTEN_ADDR: "0.0.0.0:1053"
+      ZEEDER__DNS__DOMAIN: "mainnet.seeder.example.com"
+      ZEEDER__DNS__NAMESERVER: "ns-mainnet.seeder.example.com"
+      ZEEDER__DNS__TTL: "600"
+      ZEEDER__METRICS__ENDPOINT_ADDR: "0.0.0.0:9999"
+
+  testnet:
+    image: zeeder
+    restart: unless-stopped
+    ports:
+      - "203.0.113.20:53:1053/udp"
+      - "203.0.113.20:53:1053/tcp"
+      - "127.0.0.1:10099:9999/tcp"
+    volumes:
+      - zeeder-testnet-cache:/cache
+    environment:
+      ZEEDER__CRAWLER__NETWORK: "Testnet"
+      ZEEDER__DNS__LISTEN_ADDR: "0.0.0.0:1053"
+      ZEEDER__DNS__DOMAIN: "testnet.seeder.example.com"
+      ZEEDER__DNS__NAMESERVER: "ns-testnet.seeder.example.com"
+      ZEEDER__DNS__TTL: "300"
+      ZEEDER__METRICS__ENDPOINT_ADDR: "0.0.0.0:9999"
+
+volumes:
+  zeeder-mainnet-cache:
+  zeeder-testnet-cache:
 ```
 
-**2. Build:**
+This shares the host and possibly the subnet, but it does not share the public
+IP, cache, metrics port, or process state.
+
+## Bare Metal Deployment
+
+Use bare metal when you want Zeeder managed directly by systemd. The service
+needs permission to bind port 53 and a writable cache directory for
+zebra-network's peer cache.
+
+### Install
+
+Build Zeeder as an operator with a Rust toolchain, then install only the binary
+and configuration on the host:
+
 ```bash
+sudo useradd --system --home /var/lib/zeeder --shell /usr/sbin/nologin zeeder
+sudo install -d -o zeeder -g zeeder /var/lib/zeeder
+sudo install -d -o root -g root /opt/zeeder /etc/zeeder
+
+git clone https://github.com/ZcashFoundation/dnsseederNG zeeder
 cd zeeder
 cargo build --release
+sudo install -m 0755 target/release/zeeder /opt/zeeder/zeeder
 ```
 
-**3. Create systemd service** (`/etc/systemd/system/zeeder.service`):
+Create `/etc/zeeder/mainnet.toml`:
+
+```toml
+[dns]
+listen_addr = "0.0.0.0:53"
+domain = "mainnet.seeder.example.com"
+nameserver = "ns-mainnet.seeder.example.com"
+ttl = 600
+
+[crawler]
+network = "Mainnet"
+
+[rate_limit]
+queries_per_second = 10
+burst_size = 20
+
+[metrics]
+endpoint_addr = "127.0.0.1:9999"
+```
+
+Create `/etc/systemd/system/zeeder-mainnet.service`:
+
 ```ini
 [Unit]
-Description=Zcash DNS Seeder
-After=network.target
+Description=Zeeder DNS seeder for Zcash mainnet
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=zebra
-WorkingDirectory=/opt/zeeder
-Environment="ZEEDER__DNS__DOMAIN=mainnet.seeder.example.com"
-Environment="ZEEDER__DNS__NAMESERVER=ns.seeder.example.com"
-Environment="ZEEDER__CRAWLER__NETWORK=Mainnet"
-Environment="ZEEDER__METRICS__ENDPOINT_ADDR=0.0.0.0:9999"
-ExecStart=/opt/zeeder/target/release/zeeder start
-Restart=always
+User=zeeder
+Group=zeeder
+Environment="XDG_CACHE_HOME=/var/cache/zeeder-mainnet"
+ExecStart=/opt/zeeder/zeeder start --config /etc/zeeder/mainnet.toml
+Restart=on-failure
 RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=60
+CacheDirectory=zeeder-mainnet
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/cache/zeeder-mainnet
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-**4. Enable and start:**
+Start it:
+
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable zeeder
-sudo systemctl start zeeder
+sudo systemctl enable --now zeeder-mainnet
+sudo systemctl status zeeder-mainnet
 ```
 
-### DNS Setup
+For testnet, create a second TOML file and service unit with a separate
+`dns.domain`, `dns.nameserver`, `crawler.network`, cache directory, and metrics
+port. If both services run on one host, they also need separate public IPs
+because both must bind port 53.
 
-**Example DNS zone configuration:**
+## DNS Setup
+
+Configure DNS in the parent zone that owns your seed domains. The parent zone
+must publish both the delegation and the nameserver address record.
+
+### Single Mainnet Seeder
+
+Example parent-zone records:
 
 ```bind
-; Host the nameserver address outside the served seed domains
-seeder.example.com.    IN  NS      ns.seeder.example.com.
-ns.seeder.example.com. IN  A       203.0.113.10
-
-; The seeder will answer for these:
-mainnet.seeder.example.com. IN NS ns.seeder.example.com.
-testnet.seeder.example.com. IN NS ns.seeder.example.com.
+mainnet.seeder.example.com. IN NS ns-mainnet.seeder.example.com.
+ns-mainnet.seeder.example.com. IN A 203.0.113.10
 ```
 
-**Verify delegation:**
+The Zeeder service at `203.0.113.10` should use:
+
+```toml
+[dns]
+domain = "mainnet.seeder.example.com"
+nameserver = "ns-mainnet.seeder.example.com"
+```
+
+### Separate Mainnet And Testnet Seeders
+
+Use separate public IPs when both networks are served by Zeeder:
+
+```bind
+mainnet.seeder.example.com. IN NS ns-mainnet.seeder.example.com.
+ns-mainnet.seeder.example.com. IN A 203.0.113.10
+
+testnet.seeder.example.com. IN NS ns-testnet.seeder.example.com.
+ns-testnet.seeder.example.com. IN A 203.0.113.20
+```
+
+The mainnet Zeeder process should answer only `mainnet.seeder.example.com`, and
+the testnet Zeeder process should answer only `testnet.seeder.example.com`.
+
+### High Availability DNS
+
+Add more NS records for each network when you deploy more seeders:
+
+```bind
+mainnet.seeder.example.com. IN NS ns1-mainnet.seeder.example.com.
+mainnet.seeder.example.com. IN NS ns2-mainnet.seeder.example.com.
+
+ns1-mainnet.seeder.example.com. IN A 203.0.113.10
+ns2-mainnet.seeder.example.com. IN A 198.51.100.10
+```
+
+Every nameserver listed for `mainnet.seeder.example.com` must run a Zeeder
+process configured for `mainnet.seeder.example.com`.
+
+### Delegation Verification
+
+After updating DNS, verify both the parent delegation and the seeder response:
+
 ```bash
-dig mainnet.seeder.example.com NS
-dig @203.0.113.10 mainnet.seeder.example.com A
+dig mainnet.seeder.example.com NS +short
+dig ns-mainnet.seeder.example.com A +short
+dig @203.0.113.10 mainnet.seeder.example.com SOA
+dig @203.0.113.10 mainnet.seeder.example.com A +short
 ```
 
-### Firewall Configuration
+For each additional nameserver IP, run the direct `dig @<ip>` checks. Do not
+only test recursive resolution, because recursive resolvers may cache old
+answers or hide one failed nameserver behind retries.
+
+### DNS Provider Notes
+
+Most DNS providers expose this as a delegated subdomain or NS record. Add the
+NS record for the seed domain, then add A or AAAA records for each nameserver
+hostname in the parent zone.
+
+Prefer nameserver hostnames that are outside the delegated seed domain, such as
+`ns-mainnet.seeder.example.com` for `mainnet.seeder.example.com`. Do not choose
+`ns1.mainnet.seeder.example.com` unless another authoritative server can answer
+its address record, because Zeeder does not serve nameserver glue inside its
+own `dns.domain`.
+
+## Firewall Rules
+
+Open DNS to the internet and keep metrics private:
 
 ```bash
 # Allow DNS queries
 ufw allow 53/udp
 ufw allow 53/tcp
 
-# Allow metrics (from monitoring network only)
+# Allow metrics from the monitoring network only
 ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
 
-# Optional: allow inbound P2P crawler connections (choose one network)
+# Optional: allow inbound P2P crawler connections for the network served here
 ufw allow 8233/tcp   # mainnet
 ufw allow 18233/tcp  # testnet
-
-# Allow outbound to Zcash network
-# (Usually no action needed for outbound)
 ```
 
-### Security Checklist
+Outbound connections to the Zcash P2P network must also be allowed. Most hosts
+allow outbound traffic by default, but locked-down environments need egress to
+port 8233 for mainnet or 18233 for testnet.
 
-- ✅ Rate limiting enabled (`rate_limit` configured)
-- ✅ Metrics endpoint firewalled (if exposed)
-- ✅ Running as non-root user
-- ✅ DNS domain validation (automatic)
-- ✅ Regular security updates
-- ✅ Monitor `zeeder_mutex_poisoning_total` metric
-
-## Monitoring & Operations
-
-### Metrics
-
-**Metrics endpoint:** `http://localhost:9999/metrics` (if enabled)
+## Monitoring
 
 ### Health Checks
 
-**Liveness:** the DNS server is live when it returns an authoritative response
-for the configured seed domain:
+Liveness checks should ask the DNS server for zone metadata:
 
 ```bash
 dig @127.0.0.1 -p 1053 testnet.seeder.example.com SOA
 ```
 
-**Readiness:** the crawler is ready to serve bootstrap peers when at least one
-address family has a non-zero servable-peer gauge:
+Readiness checks should use the metrics endpoint. The crawler is ready to serve
+bootstrap peers when at least one address family reports a
+`non-zero servable-peer gauge`:
 
 ```bash
 curl -s http://localhost:9999/metrics | grep 'zeeder_peers_servable'
 ```
 
-A zero gauge means DNS can still answer zone metadata and NODATA responses, but
-bootstrap A/AAAA answers will be empty for that address family.
+A zero gauge means DNS can still answer SOA, NS, and NODATA responses, but A or
+AAAA bootstrap answers will be empty for that address family.
 
-**Critical Metrics to Monitor:**
+### Metrics
+
+Metrics are exposed at `/metrics` when `metrics.endpoint_addr` is configured.
 
 | Metric | Type | Labels | Description | Alert If |
 |--------|------|--------|-------------|----------|
@@ -263,32 +499,24 @@ bootstrap A/AAAA answers will be empty for that address family.
 | `zeeder_dns_queries_total` | Counter | `record_type=A\|AAAA\|SOA\|NS\|other` | Total queries | - |
 | `zeeder_dns_response_peers` | Summary | - | Peers per response | - |
 
-### Sample Prometheus Queries
+### Prometheus Queries
 
-**Servable peer count:**
 ```promql
+# Servable peer count
 zeeder_peers_servable{addr_family="v4"}
 zeeder_peers_servable{addr_family="v6"}
-```
 
-**Query rate (queries/sec):**
-```promql
+# Query rate
 rate(zeeder_dns_queries_total[5m])
-```
 
-**Rate limiting rate:**
-```promql
+# Rate limiting rate
 rate(zeeder_dns_rate_limited_total[5m])
-```
 
-**Average peers per response:**
-```promql
+# Average peers per response
 rate(zeeder_dns_response_peers_sum[5m]) / rate(zeeder_dns_response_peers_count[5m])
 ```
 
 ### Alerting Rules
-
-**Example Prometheus alerts:**
 
 ```yaml
 groups:
@@ -299,114 +527,163 @@ groups:
         for: 15m
         annotations:
           summary: "Seeder has low peer count"
-          
+
       - alert: SeederMutexPoisoned
         expr: increase(zeeder_mutex_poisoning_total[5m]) > 0
         annotations:
-          summary: "CRITICAL: Mutex poisoning detected"
-          
+          summary: "Mutex poisoning detected"
+
       - alert: SeederHighRateLimiting
         expr: rate(zeeder_dns_rate_limited_total[5m]) > 10
         for: 5m
         annotations:
-          summary: "High rate limiting (possible attack)"
+          summary: "High rate limiting"
 ```
 
-### Troubleshooting
+## Troubleshooting
 
-**No peers returning:**
+### No A Or AAAA Answers
+
+Check the servable peer gauges first:
+
 ```bash
-# Check peer count
 curl -s http://localhost:9999/metrics | grep 'zeeder_peers_servable'
-
-# Check logs for errors
-journalctl -u zeeder -n 100
-
-# Verify network connectivity
-dig @seed.electriccoin.co mainnet.z.cash A
+curl -s http://localhost:9999/metrics | grep 'zeeder_peers_known'
 ```
 
-**DNS not responding:**
+If known peers are present but servable peers are low, inspect the unservable
+reason gauges:
+
 ```bash
-# Verify server is listening
+curl -s http://localhost:9999/metrics | grep 'zeeder_peers_unservable'
+```
+
+Common causes are peers on the wrong port, peers that have not handshaked
+recently, peers that do not advertise `NODE_NETWORK`, and environments with no
+outbound P2P access.
+
+### DNS Does Not Respond
+
+Check whether Zeeder is listening on UDP and TCP 53:
+
+```bash
 ss -ulnp | grep :53
+ss -tlnp | grep :53
+```
 
-# Check logs
-journalctl -u zeeder -f
+Then check logs:
 
-# Test locally
+```bash
+journalctl -u zeeder-mainnet -n 100
+docker compose logs --tail=100 mainnet
+```
+
+Finally, query the service directly:
+
+```bash
 dig @127.0.0.1 -p 1053 testnet.seeder.example.com A
 ```
 
-**Rate limiting too aggressive:**
+### Delegation Is Wrong
+
+Query the parent records and each authoritative IP directly:
+
 ```bash
-# Increase limits (adjust for your traffic)
+dig mainnet.seeder.example.com NS +short
+dig ns-mainnet.seeder.example.com A +short
+dig @203.0.113.10 mainnet.seeder.example.com SOA
+```
+
+If direct queries work but recursive queries fail, wait for parent-zone TTLs to
+expire and check that every NS target has an address record.
+
+### Rate Limiting Is Too Aggressive
+
+Increase the per-IP rate and burst size, then restart:
+
+```bash
 export ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND="20"
 export ZEEDER__RATE_LIMIT__BURST_SIZE="40"
-
-# Restart seeder
-systemctl restart zeeder
+systemctl restart zeeder-mainnet
 ```
 
-**High memory usage:**
-```bash
-# Check address book size
-curl -s http://localhost:9999/metrics | grep 'zeeder_peers_known'
+Watch `zeeder_dns_rate_limited_total` after the change.
 
-# Clear cache if needed (will rebuild)
-rm -rf ~/.cache/zebra/network/*
-systemctl restart zeeder
+### Cache Needs A Reset
+
+The peer cache is only a startup accelerator. It is safe to delete, and Zeeder
+will rebuild it from the network.
+
+For Docker:
+
+```bash
+docker compose -f compose.mainnet.yml down
+docker volume rm zeeder-mainnet_zeeder-mainnet-cache
+docker compose -f compose.mainnet.yml up -d
 ```
 
-### Maintenance
+For systemd:
 
-**Viewing logs:**
 ```bash
-# Systemd
-journalctl -u zeeder -f
-
-# Docker
-docker-compose logs -f seeder
+sudo systemctl stop zeeder-mainnet
+sudo rm -rf /var/cache/zeeder-mainnet/zebra/network/*
+sudo systemctl start zeeder-mainnet
 ```
 
-**Restarting:**
-```bash
-# Systemd
-systemctl restart zeeder
+## Maintenance
 
-# Docker
-docker-compose restart seeder
+### Logs
+
+```bash
+journalctl -u zeeder-mainnet -f
+docker compose -f compose.mainnet.yml logs -f mainnet
 ```
 
-**Upgrading:**
+### Restart
+
 ```bash
-# Systemd
-sudo systemctl stop zeeder
-cd /opt/zeeder
+sudo systemctl restart zeeder-mainnet
+docker compose -f compose.mainnet.yml restart mainnet
+```
+
+### Upgrade
+
+For systemd:
+
+```bash
+sudo systemctl stop zeeder-mainnet
+cd zeeder
 git pull
 cargo build --release
-sudo systemctl start zeeder
-
-# Docker
-docker-compose pull
-docker-compose up -d
+sudo install -m 0755 target/release/zeeder /opt/zeeder/zeeder
+sudo systemctl start zeeder-mainnet
 ```
 
-**Cache persistence:**
-- Address book cached in `~/.cache/zebra/network/` by default
-- The Docker image sets `XDG_CACHE_HOME=/cache`, so its peer cache lives under `/cache/zebra/network/`
-- Persisting this directory speeds up startup
-- Safe to delete (will rebuild from network)
+For Docker:
 
-### Capacity Planning
+```bash
+docker build -t zeeder .
+docker compose -f compose.mainnet.yml up -d
+```
 
-**Expected resource usage:**
-- **RAM**: ~50-100MB
-- **CPU**: <5% (single core)
-- **Disk**: <10MB (cache)
-- **Network**: ~1-10 Mbps depending on query volume
+### Cache Persistence
 
-**Scaling:**
-- Single instance handles 1000s of queries/sec
-- Scale horizontally with DNS round-robin if needed
-- Rate limiting per-IP prevents single-source overload
+- The systemd unit above sets `XDG_CACHE_HOME=/var/cache/zeeder-mainnet`, so
+  the peer cache lives under `/var/cache/zeeder-mainnet/zebra/network/`.
+- Bare-metal processes without `XDG_CACHE_HOME` use `~/.cache/zebra/network/`.
+- Docker sets `XDG_CACHE_HOME=/cache`, so the peer cache lives under
+  `/cache/zebra/network/`.
+- Persisting the cache speeds up restart, but deleting it is safe.
+
+## Capacity Planning
+
+Expected usage is small for normal DNS seeder traffic:
+
+- RAM: about 50 to 100 MB
+- CPU: under 5% of one core
+- Disk: under 10 MB for the peer cache
+- Network: about 1 to 10 Mbps, depending on DNS query volume and P2P activity
+
+Scale by adding independent seeders and publishing additional NS records. Keep
+metrics and logs per seeder so one unhealthy instance does not disappear behind
+aggregate fleet numbers.

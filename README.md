@@ -27,7 +27,7 @@ dig @127.0.0.1 -p 1053 testnet.seeder.example.com SOA
 ## Documentation
 
 - [Architecture](docs/architecture.md): system design, component boundaries, data flow, and ADR index
-- [Operations](docs/operations.md): configuration, deployment, metrics, alerts, and troubleshooting
+- [Operations](docs/operations.md): production topology, DNS delegation, deployment, monitoring, and troubleshooting
 - [Development](docs/development.md): local setup, project structure, testing, and maintenance
 - [Context](CONTEXT.md): glossary for load-bearing project terms
 
