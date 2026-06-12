@@ -44,12 +44,12 @@ zebra-seeder/
 │   ├── main.rs           # Entry point
 │   ├── commands.rs       # CLI command handling
 │   ├── config.rs         # Configuration structures
-│   ├── server.rs         # DNS server + crawler logic
-│   ├── metrics.rs        # Prometheus metrics setup
-│   └── tests/            # Unit tests
-│       ├── mod.rs
-│       ├── cli_tests.rs
-│       └── config_tests.rs
+│   ├── crawl.rs          # Crawl-side module registration
+│   ├── crawl/            # Chain tip, servability, and address cache
+│   ├── dns.rs            # DNS-side module registration
+│   ├── dns/              # DNS request handling and rate limiting
+│   ├── seeder.rs         # Process composition and shutdown handling
+│   └── metrics.rs        # Prometheus metrics setup
 ├── docs/                 # Documentation
 ├── Dockerfile            # Container image
 ├── docker-compose.yml    # Docker orchestration
@@ -62,7 +62,9 @@ zebra-seeder/
 - **`main.rs`**: Entry point, error handling setup
 - **`commands.rs`**: CLI parsing, config loading, server initialization
 - **`config.rs`**: `SeederConfig` struct, configuration loading
-- **`server.rs`**: Core logic - DNS server, rate limiting, crawler
+- **`seeder.rs`**: Composition root for crawling, DNS serving, and shutdown
+- **`crawl/`**: Chain tip, peer servability, and servable peer cache
+- **`dns/`**: DNS request handling and rate limiting
 - **`metrics.rs`**: Prometheus metrics initialization
 
 ## Code Overview
@@ -75,12 +77,18 @@ zebra-seeder/
 - `MetricsConfig`: Metrics endpoint settings
 - Serde deserialization from env vars/TOML
 
-**Server (`server.rs`):**
-- `spawn()`: Main server initialization
+**Seeder (`seeder.rs`):**
+- `run()`: Main seeder initialization and shutdown select
+
+**Crawl (`crawl/`):**
+- `SeederChainTip`: Protocol-version floor for zebra-network handshakes
+- `classify_peer()`: Peer servability predicate
+- `address_cache::spawn()`: Servable peer refresh loop and crawler monitoring
+- `ServablePeers`: Shuffled, capped peer snapshot for DNS queries
+
+**DNS (`dns/`):**
+- `DnsRequestHandler`: DNS request handler (implements `RequestHandler`)
 - `RateLimiter`: Per-IP rate limiting
-- `SeederAuthority`: DNS request handler (implements `RequestHandler`)
-- `log_crawler_status()`: Crawler monitoring
-- Peer filtering and shuffling logic
 
 **Commands (`commands.rs`):**
 - CLI structure with clap
@@ -139,11 +147,10 @@ open coverage/index.html
 
 ### Test Structure
 
-- **Unit tests**: Inline in source files (e.g., `src/server.rs`)
-- **Config tests**: `src/tests/config_tests.rs` (env var handling, defaults)
-- **CLI tests**: `src/tests/cli_tests.rs` (argument parsing)
-- **DNS integration tests**: `src/server.rs` (inline async tests)
-- **Property-based tests**: `src/server.rs` (proptest for IP filtering)
+- **Unit tests**: Inline in source files (e.g., `src/crawl/servability.rs`)
+- **Config tests**: `src/config.rs` (env var handling, defaults)
+- **CLI tests**: `src/commands.rs` (argument parsing)
+- **DNS integration tests**: `src/dns/request_handler.rs` (inline async tests)
 
 ### Adding Tests
 
@@ -316,7 +323,7 @@ impl Default for SeederConfig {
 }
 ```
 
-3. Add test in `src/tests/config_tests.rs`:
+3. Add test in the module that owns the config code (`src/config.rs`):
 ```rust
 #[test]
 fn test_my_param_default() {
@@ -329,7 +336,7 @@ fn test_my_param_default() {
 
 ### Adding New Metric
 
-1. Add metric in relevant location (e.g., `src/server.rs`):
+1. Add metric in the module that emits it (for example, `src/dns/request_handler.rs`):
 ```rust
 use metrics::{counter, gauge, histogram};
 

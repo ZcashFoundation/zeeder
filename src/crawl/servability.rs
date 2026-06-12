@@ -1,4 +1,4 @@
-//! Peer eligibility: whether a crawled peer should be served to a bootstrapping
+//! Peer servability: whether a crawled peer should be served to a bootstrapping
 //! node.
 //!
 //! A peer is servable only when zebra-network has recently handshaked it (which
@@ -15,7 +15,7 @@ use zebra_network::types::MetaAddr;
 
 /// Why a peer is not servable. Each variant maps to a stable `reason` metric label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum IneligibleReason {
+pub(crate) enum UnservableReason {
     /// Loopback, unspecified, or multicast address.
     NotRoutable,
     /// Not on the network's default port (DNS answers cannot carry a port).
@@ -26,7 +26,7 @@ pub(crate) enum IneligibleReason {
     NotFullNode,
 }
 
-impl IneligibleReason {
+impl UnservableReason {
     /// Every reason, so callers can reset each per-reason gauge on a refresh.
     pub(crate) const ALL: [Self; 4] = [
         Self::NotRoutable,
@@ -55,18 +55,18 @@ fn classify(
     default_port: u16,
     is_recently_live: bool,
     advertises_node_network: bool,
-) -> Result<(), IneligibleReason> {
+) -> Result<(), UnservableReason> {
     if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
-        return Err(IneligibleReason::NotRoutable);
+        return Err(UnservableReason::NotRoutable);
     }
     if port != default_port {
-        return Err(IneligibleReason::WrongPort);
+        return Err(UnservableReason::WrongPort);
     }
     if !is_recently_live {
-        return Err(IneligibleReason::NotRecentlyLive);
+        return Err(UnservableReason::NotRecentlyLive);
     }
     if !advertises_node_network {
-        return Err(IneligibleReason::NotFullNode);
+        return Err(UnservableReason::NotFullNode);
     }
     Ok(())
 }
@@ -76,7 +76,7 @@ pub(crate) fn classify_peer(
     meta: &MetaAddr,
     now: DateTime<Utc>,
     network: &Network,
-) -> Result<(), IneligibleReason> {
+) -> Result<(), UnservableReason> {
     let addr = meta.addr();
     classify(
         addr.ip(),
@@ -121,7 +121,7 @@ mod tests {
         for ip in cases {
             assert_eq!(
                 classify(ip, DEFAULT_PORT, DEFAULT_PORT, true, true),
-                Err(IneligibleReason::NotRoutable),
+                Err(UnservableReason::NotRoutable),
                 "{ip} should be NotRoutable"
             );
         }
@@ -131,7 +131,7 @@ mod tests {
     fn non_default_port_is_rejected() {
         assert_eq!(
             classify(routable_ip(), 1234, DEFAULT_PORT, true, true),
-            Err(IneligibleReason::WrongPort)
+            Err(UnservableReason::WrongPort)
         );
     }
 
@@ -139,7 +139,7 @@ mod tests {
     fn peer_without_recent_handshake_is_rejected() {
         assert_eq!(
             classify(routable_ip(), DEFAULT_PORT, DEFAULT_PORT, false, true),
-            Err(IneligibleReason::NotRecentlyLive)
+            Err(UnservableReason::NotRecentlyLive)
         );
     }
 
@@ -147,7 +147,7 @@ mod tests {
     fn recently_live_non_full_node_is_rejected() {
         assert_eq!(
             classify(routable_ip(), DEFAULT_PORT, DEFAULT_PORT, true, false),
-            Err(IneligibleReason::NotFullNode)
+            Err(UnservableReason::NotFullNode)
         );
     }
 
@@ -161,13 +161,13 @@ mod tests {
                 false,
                 false
             ),
-            Err(IneligibleReason::NotRoutable)
+            Err(UnservableReason::NotRoutable)
         );
     }
 
     #[test]
     fn every_reason_has_a_unique_label() {
-        let labels: Vec<&str> = IneligibleReason::ALL.iter().map(|r| r.label()).collect();
+        let labels: Vec<&str> = UnservableReason::ALL.iter().map(|r| r.label()).collect();
         let unique: HashSet<&str> = labels.iter().copied().collect();
         assert_eq!(labels.len(), unique.len(), "reason labels must be unique");
         assert_eq!(unique.len(), 4, "all reasons must have a label");

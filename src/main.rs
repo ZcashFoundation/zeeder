@@ -8,11 +8,10 @@ use color_eyre::eyre::Result;
 
 mod commands;
 mod config;
+mod crawl;
+mod dns;
 mod metrics;
-mod server;
-
-#[cfg(test)]
-mod tests;
+mod seeder;
 
 #[tokio::main]
 async fn main() -> Result<()> {

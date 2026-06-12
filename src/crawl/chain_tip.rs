@@ -34,7 +34,7 @@ impl SeederChainTip {
     /// The height comes from zebra-chain's activation table rather than a
     /// hardcoded constant, so the enforced version floor rises automatically
     /// when a future zebra-chain release activates the next upgrade.
-    pub(crate) fn current_upgrade(network: &Network) -> Self {
+    pub(crate) fn at_current_upgrade(network: &Network) -> Self {
         let (_upgrade, height) =
             NetworkUpgrade::current_with_activation_height(network, Height::MAX);
         Self { height }
@@ -81,7 +81,7 @@ mod tests {
     use super::*;
 
     fn version_floor(network: &Network) -> Version {
-        let tip = SeederChainTip::current_upgrade(network);
+        let tip = SeederChainTip::at_current_upgrade(network);
         Version::min_remote_for_height(network, tip.best_tip_height())
     }
 

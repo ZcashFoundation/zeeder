@@ -9,9 +9,9 @@ graph TD
     A[DNS Client] -->|UDP Query| B[hickory-dns Server]
     B --> C[Rate Limiter]
     C -->|Check IP| D{Allow?}
-    D -->|Yes| E[SeederAuthority]
+    D -->|Yes| E[DnsRequestHandler]
     D -->|No| F[Drop Packet]
-    E --> G[Address Cache]
+    E --> G[Servable Peer Cache]
     G -->|watch channel| H[Cache Updater]
     H -->|5s interval| I[Address Book]
     I --> J[zebra-network]
@@ -24,7 +24,7 @@ graph TD
 - **zebra-network**: Handles Zcash P2P networking and peer discovery
 - **hickory-dns**: DNS server framework
 - **Rate Limiter**: Per-IP rate limiting using governor crate
-- **Address Cache**: Lock-free cache of servable peers, updated every 5 seconds
+- **Servable Peer Cache**: Lock-free cache of servable peers, updated every 5 seconds
 - **Address Book**: Thread-safe peer storage managed by zebra-network
 - **Metrics**: Prometheus metrics via metrics-exporter-prometheus
 
@@ -38,7 +38,6 @@ graph TD
 4. Create rate limiter (if enabled)
 5. Spawn address cache updater (updates every 5 seconds)
 6. Start DNS server on configured port
-7. Spawn metrics logger task (logs status every 10 minutes)
 
 ### DNS Query Handling
 
@@ -47,16 +46,16 @@ sequenceDiagram
     Client->>DNS Server: Query A record
     DNS Server->>Rate Limiter: Check IP limit
     alt Rate limit OK
-        Rate Limiter->>Authority: Process query
-        Authority->>Authority: Validate domain
+        Rate Limiter->>DnsRequestHandler: Process query
+        DnsRequestHandler->>DnsRequestHandler: Validate domain
         alt Domain valid
-            Authority->>Address Cache: Read cached peers
-            Note over Authority,Address Cache: Lock-free read via watch channel
-            Address Cache-->>Authority: IPv4 or IPv6 peer list
-            Authority-->>DNS Server: A/AAAA records
+            DnsRequestHandler->>Servable Peer Cache: Read cached peers
+            Note over DnsRequestHandler,Servable Peer Cache: Lock-free read via watch channel
+            Servable Peer Cache-->>DnsRequestHandler: IPv4 or IPv6 peer list
+            DnsRequestHandler-->>DNS Server: A/AAAA records
             DNS Server-->>Client: Response (up to 25 IPs)
         else Domain invalid
-            Authority-->>DNS Server: REFUSED
+            DnsRequestHandler-->>DNS Server: REFUSED
             DNS Server-->>Client: REFUSED
         end
     else Rate limited
@@ -118,7 +117,7 @@ sequenceDiagram
 **How it works:**
 - zebra-network continuously discovers and manages peers
 - Metrics logger periodically logs Address Book stats
-- Metrics updated with peer counts (known, servable IPv4/IPv6, ineligible by reason)
+- Metrics updated with peer counts (known, servable IPv4/IPv6, unservable by reason)
 
 ## Components Deep Dive
 
@@ -138,7 +137,7 @@ sequenceDiagram
 - Read the Address Book for servable peers
 - Never send blockchain data (we're not a full node)
 
-**Files:** `src/server.rs` (initialization)
+**Files:** `src/seeder.rs` (initialization), `src/crawl/chain_tip.rs` (protocol-version floor)
 
 ---
 
@@ -152,11 +151,11 @@ sequenceDiagram
 - Response building
 
 **Our usage:**
-- Implement `RequestHandler` trait via `SeederAuthority`
+- Implement `RequestHandler` trait via `DnsRequestHandler`
 - Handle A and AAAA queries
 - Return REFUSED for unauthorized domains
 
-**Files:** `src/server.rs` (authority implementation)
+**Files:** `src/dns/request_handler.rs`
 
 ---
 
@@ -178,7 +177,7 @@ sequenceDiagram
 - Rate-limited requests: dropped silently (no response)
 - Metric: `seeder_dns_rate_limited_total`
 
-**Files:** `src/server.rs` (`RateLimiter` struct), `src/config.rs` (`RateLimitConfig`)
+**Files:** `src/dns/rate_limiter.rs`, `src/config.rs` (`RateLimitConfig`)
 
 ---
 
@@ -198,14 +197,14 @@ sequenceDiagram
 
 **Implementation:**
 ```rust
-struct AddressRecords {
+struct ServablePeers {
     ipv4: Vec<PeerSocketAddr>,  // Pre-filtered, shuffled
     ipv6: Vec<PeerSocketAddr>,  // Pre-filtered, shuffled
 }
 
 // Cache updater runs every 5 seconds:
 // 1. Lock address book
-// 2. Classify peers (server::eligibility); keep servable ones
+// 2. Classify peers (crawl::servability); keep servable ones
 // 3. Shuffle and take 25 each (per address family)
 // 4. Send to watch channel
 
@@ -221,7 +220,7 @@ let peers = match record_type {
 - ✅ Predictable low-latency responses
 - ⚠️ Peer list may be up to 5 seconds stale (acceptable for DNS seeding)
 
-**Files:** `src/server.rs` (`AddressRecords`, `spawn_addresses_cache_updater`)
+**Files:** `src/crawl/address_cache.rs`
 
 ---
 
@@ -229,7 +228,7 @@ let peers = match record_type {
 
 **Mutex Strategy:**
 - Address Book protected by `std::sync::Mutex`
-- Only locked by cache updater (every 5 seconds) and metrics logger (every 10 minutes)
+- Only locked by cache updater (every 5 seconds)
 - DNS queries never lock the mutex directly
 
 **Poisoning Recovery:**
@@ -238,7 +237,7 @@ let peers = match record_type {
 - Log error + increment metric
 - Continue serving (availability over strict correctness)
 
-**Peer Eligibility (done in cache updater, see `server::eligibility`):**
+**Peer Servability (done in cache updater, see `crawl::servability`):**
 
 A peer is *servable* only if it is:
 - Recently live: zebra-network handshaked it within the liveness window (transitively current-version and reachable)
@@ -275,16 +274,16 @@ Servable peers are then separated by address family (IPv4/IPv6), shuffled, and c
 **Key metrics:**
 - `seeder_peers_known` - Total peers in the address book (gauge)
 - `seeder_peers_servable` - Servable peers by address family (gauge, `addr_family`)
-- `seeder_peers_ineligible` - Excluded peers by reason (gauge, `reason`)
+- `seeder_peers_unservable` - Excluded peers by reason (gauge, `reason`)
 - `seeder_min_protocol_version` - Enforced protocol-version floor (gauge)
 - `seeder_build_info` - Build and network identification (gauge, `version`/`network`)
 - `seeder_dns_queries_total` - DNS queries by record type (counter)
 - `seeder_dns_response_peers` - Peers per response (histogram)
 - `seeder_dns_rate_limited_total` - Rate-limited queries (counter)
 - `seeder_dns_errors_total` - DNS errors (counter)
-- `seeder_mutex_poisoning_total` - Mutex poisoning events (counter, `location`)
+- `seeder_mutex_poisoning_total` - Mutex poisoning events (counter)
 
-**Files:** `src/metrics.rs`, `src/server.rs`
+**Files:** `src/metrics.rs`, `src/seeder.rs`, `src/crawl/address_cache.rs`, `src/dns/request_handler.rs`
 
 ## Architecture Decision Records
 
@@ -391,7 +390,7 @@ Implement per-IP rate limiting using `governor` crate:
 
 ---
 
-### ADR 004: Peer Eligibility and Protocol-Version Floor
+### ADR 004: Peer Servability and Protocol-Version Floor
 
 **Status:** Accepted
 
@@ -399,7 +398,7 @@ Implement per-IP rate limiting using `governor` crate:
 zebra-network's address book stores every peer it learns about, in every connection state, including `NeverAttemptedGossiped` addresses it has never contacted. `MetaAddr` carries no protocol version, so the seeder cannot filter served peers by version after the fact. The seeder also runs with no chain state, and zebra-network derives the handshake's minimum acceptable protocol version from the chain tip it is given.
 
 **Decision:**
-Serve a peer only when it is *servable*: recently handshaked (`was_recently_live`), advertising the full-node service (`NODE_NETWORK`), routable, and on the network default port. Implement the decision once in `server::eligibility`. Leave banning and misbehavior scoring to zebra-network, which removes a banned peer from the address book before the seeder classifies it. Replace `NoChainTip` with a `SeederChainTip` pinned to the current network upgrade's activation height, so zebra-network's handshake enforces that upgrade's protocol-version floor and outdated peers never reach the address book.
+Serve a peer only when it is *servable*: recently handshaked (`was_recently_live`), advertising the full-node service (`NODE_NETWORK`), routable, and on the network default port. Implement the decision once in `crawl::servability`. Leave banning and misbehavior scoring to zebra-network, which removes a banned peer from the address book before the seeder classifies it. Replace `NoChainTip` with a `SeederChainTip` pinned to the current network upgrade's activation height, so zebra-network's handshake enforces that upgrade's protocol-version floor and outdated peers never reach the address book.
 
 **Rationale:**
 - A recent handshake transitively proves the peer passed the version floor and advertised the network service, so liveness and version-correctness are a single check.
@@ -409,7 +408,7 @@ Serve a peer only when it is *servable*: recently handshaked (`was_recently_live
 
 **Consequences:**
 - ✅ Outdated-version and unverified-gossip peers are no longer served (issue #19).
-- ✅ One tested predicate; rejection reasons are exported via `seeder_peers_ineligible{reason}`.
+- ✅ One tested predicate; rejection reasons are exported via `seeder_peers_unservable{reason}`.
 - ⚠️ The served set is smaller than the raw address book; on sparse networks (testnet, IPv6) it can be thin. Watch `seeder_peers_servable`.
 - ⚠️ The floor reaches the highest upgrade the pinned zebra activates (NU6.2 today); full NU7 enforcement arrives when a future zebra release activates it. A tripwire test pins the expected floor.
 

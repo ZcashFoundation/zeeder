@@ -217,11 +217,11 @@ ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
 | Metric | Type | Labels | Description | Alert If |
 |--------|------|--------|-------------|----------|
 | `seeder_peers_servable` | Gauge | `addr_family=v4\|v6` | Servable peers (recently-live, current-version) | < 10 |
-| `seeder_peers_ineligible` | Gauge | `reason=not_routable\|wrong_port\|not_recently_live\|not_full_node` | Excluded peers, by reason | - |
+| `seeder_peers_unservable` | Gauge | `reason=not_routable\|wrong_port\|not_recently_live\|not_full_node` | Excluded peers, by reason | - |
 | `seeder_peers_known` | Gauge | - | Total peers in the address book | - |
 | `seeder_min_protocol_version` | Gauge | - | Enforced protocol-version floor | changes only at a network upgrade |
 | `seeder_build_info` | Gauge | `version`, `network` | Build and network identification | - |
-| `seeder_mutex_poisoning_total` | Counter | `location=cache_updater\|metrics_logger` | Mutex poisoning events | > 0 |
+| `seeder_mutex_poisoning_total` | Counter | - | Mutex poisoning events | > 0 |
 | `seeder_dns_rate_limited_total` | Counter | - | Rate-limited queries | Spike indicates attack |
 | `seeder_dns_errors_total` | Counter | - | DNS errors | > 0 (sustained) |
 | `seeder_dns_queries_total` | Counter | `record_type=A\|AAAA` | Total queries | - |

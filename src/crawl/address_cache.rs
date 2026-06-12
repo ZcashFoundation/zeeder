@@ -7,7 +7,7 @@ use tokio::sync::watch;
 use zebra_chain::parameters::Network;
 use zebra_network::{AddressBook, PeerSocketAddr};
 
-use crate::server::eligibility::{IneligibleReason, classify_peer};
+use crate::crawl::servability::{UnservableReason, classify_peer};
 
 /// Maximum addresses returned per DNS query, per address family.
 const MAX_DNS_RESPONSE_PEERS: usize = 25;
@@ -15,12 +15,15 @@ const MAX_DNS_RESPONSE_PEERS: usize = 25;
 /// How often the served-address cache is recomputed from the address book.
 const CACHE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Cached address records for lock-free DNS response generation.
+/// How many cache refreshes happen between crawler status logs.
+const CRAWLER_STATUS_LOG_REFRESHES: u64 = 120;
+
+/// Cached servable peers for lock-free DNS response generation.
 ///
 /// Updated periodically by a background task so DNS queries read a shuffled,
 /// pre-filtered snapshot without ever locking the address book.
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AddressRecords {
+pub(crate) struct ServablePeers {
     pub(crate) ipv4: Vec<PeerSocketAddr>,
     pub(crate) ipv6: Vec<PeerSocketAddr>,
 }
@@ -29,36 +32,39 @@ pub(crate) struct AddressRecords {
 pub(crate) fn spawn(
     address_book: Arc<std::sync::Mutex<AddressBook>>,
     network: Network,
-) -> watch::Receiver<AddressRecords> {
-    let (latest_addresses_sender, latest_addresses) = watch::channel(AddressRecords::default());
+) -> watch::Receiver<ServablePeers> {
+    let (servable_peers_sender, servable_peers_receiver) = watch::channel(ServablePeers::default());
 
     tokio::spawn(async move {
+        let mut refresh_count = 0u64;
+
         loop {
             tokio::time::sleep(CACHE_REFRESH_INTERVAL).await;
+            refresh_count = refresh_count.wrapping_add(1);
+            let should_log_status = refresh_count.is_multiple_of(CRAWLER_STATUS_LOG_REFRESHES);
 
-            let records = {
+            let servable_peers = {
                 let guard = match address_book.lock() {
                     Ok(guard) => guard,
                     Err(poisoned) => {
                         tracing::error!(
                             "address book mutex poisoned during cache update, recovering"
                         );
-                        counter!("seeder_mutex_poisoning_total", "location" => "cache_updater")
-                            .increment(1);
+                        counter!("seeder_mutex_poisoning_total").increment(1);
                         poisoned.into_inner()
                     }
                 };
-                servable_records(&guard, &network)
+                servable_peers(&guard, &network, should_log_status)
             };
 
-            let _ = latest_addresses_sender.send(records);
+            let _ = servable_peers_sender.send(servable_peers);
         }
     });
 
-    latest_addresses
+    servable_peers_receiver
 }
 
-/// Classify every peer in the book, publish servable and per-reason ineligible
+/// Classify every peer in the book, publish servable and per-reason unservable
 /// counts as gauges, and return a shuffled, capped set of servable addresses.
 ///
 /// Shuffling the full servable set (rather than a fixed-size prefix) before
@@ -68,12 +74,12 @@ pub(crate) fn spawn(
     clippy::cast_precision_loss,
     reason = "gauge values are peer counts; f64 precision loss is irrelevant"
 )]
-fn servable_records(book: &AddressBook, network: &Network) -> AddressRecords {
+fn servable_peers(book: &AddressBook, network: &Network, should_log_status: bool) -> ServablePeers {
     let now = Utc::now();
 
     let mut ipv4 = Vec::new();
     let mut ipv6 = Vec::new();
-    let mut ineligible: HashMap<IneligibleReason, usize> = HashMap::new();
+    let mut unservable: HashMap<UnservableReason, usize> = HashMap::new();
 
     for meta in book.peers() {
         match classify_peer(&meta, now, network) {
@@ -85,16 +91,25 @@ fn servable_records(book: &AddressBook, network: &Network) -> AddressRecords {
                     ipv6.push(addr);
                 }
             }
-            Err(reason) => *ineligible.entry(reason).or_default() += 1,
+            Err(reason) => *unservable.entry(reason).or_default() += 1,
         }
     }
 
     gauge!("seeder_peers_known").set(book.len() as f64);
     gauge!("seeder_peers_servable", "addr_family" => "v4").set(ipv4.len() as f64);
     gauge!("seeder_peers_servable", "addr_family" => "v6").set(ipv6.len() as f64);
-    for reason in IneligibleReason::ALL {
-        gauge!("seeder_peers_ineligible", "reason" => reason.label())
-            .set(ineligible.get(&reason).copied().unwrap_or(0) as f64);
+    for reason in UnservableReason::ALL {
+        gauge!("seeder_peers_unservable", "reason" => reason.label())
+            .set(unservable.get(&reason).copied().unwrap_or(0) as f64);
+    }
+
+    if should_log_status {
+        tracing::info!(
+            total = book.len(),
+            servable_v4 = ipv4.len(),
+            servable_v6 = ipv6.len(),
+            "crawler status"
+        );
     }
 
     let mut rng = rng();
@@ -103,7 +118,7 @@ fn servable_records(book: &AddressBook, network: &Network) -> AddressRecords {
     ipv6.shuffle(&mut rng);
     ipv6.truncate(MAX_DNS_RESPONSE_PEERS);
 
-    AddressRecords { ipv4, ipv6 }
+    ServablePeers { ipv4, ipv6 }
 }
 
 #[cfg(test)]
@@ -137,9 +152,9 @@ mod tests {
         book.update(MetaAddr::new_initial_peer(peer([1, 2, 3, 4], 8233)));
         assert_eq!(book.len(), 1, "the peer should be in the book");
 
-        let records = servable_records(&book, &Network::Mainnet);
+        let peers = servable_peers(&book, &Network::Mainnet, false);
         assert!(
-            records.ipv4.is_empty() && records.ipv6.is_empty(),
+            peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "never-handshaked peers must not be served"
         );
     }
@@ -154,8 +169,8 @@ mod tests {
             false,
         ));
 
-        let records = servable_records(&book, &Network::Mainnet);
-        let served: Vec<IpAddr> = records.ipv4.iter().map(|p| p.ip()).collect();
+        let peers = servable_peers(&book, &Network::Mainnet, false);
+        let served: Vec<IpAddr> = peers.ipv4.iter().map(|p| p.ip()).collect();
         assert_eq!(served, vec![IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))]);
     }
 
@@ -168,9 +183,9 @@ mod tests {
             false,
         ));
 
-        let records = servable_records(&book, &Network::Mainnet);
+        let peers = servable_peers(&book, &Network::Mainnet, false);
         assert!(
-            records.ipv4.is_empty() && records.ipv6.is_empty(),
+            peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "a recently-live non-full-node peer must not be served"
         );
     }
@@ -186,9 +201,9 @@ mod tests {
             false,
         ));
 
-        let records = servable_records(&book, &Network::Mainnet);
+        let peers = servable_peers(&book, &Network::Mainnet, false);
         assert!(
-            records.ipv4.is_empty(),
+            peers.ipv4.is_empty(),
             "peers on a non-default port must not be served"
         );
     }

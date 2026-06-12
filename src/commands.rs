@@ -53,7 +53,7 @@ impl SeederApp {
                     crate::metrics::init(metrics_config.endpoint_addr)?;
                 }
 
-                crate::server::spawn(config).await?;
+                crate::seeder::run(config).await?;
             }
             Commands::PrintConfig => {
                 let rendered =
@@ -72,7 +72,9 @@ impl SeederApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
+
+    type TestResult = color_eyre::Result<()>;
 
     #[test]
     fn test_cli_structure() {
@@ -96,5 +98,50 @@ mod tests {
         let cmd = SeederApp::command();
         let config_arg = cmd.get_arguments().find(|a| a.get_id() == "config");
         assert!(config_arg.is_some(), "should have --config option");
+    }
+
+    #[test]
+    fn parses_start_subcommand() -> TestResult {
+        let app = SeederApp::try_parse_from(["zebra-seeder", "start"])?;
+        assert!(matches!(app.command, Commands::Start));
+        assert!(app.config.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn parses_print_config_subcommand() -> TestResult {
+        let app = SeederApp::try_parse_from(["zebra-seeder", "print-config"])?;
+        assert!(matches!(app.command, Commands::PrintConfig));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_global_config_before_subcommand() -> TestResult {
+        let app = SeederApp::try_parse_from([
+            "zebra-seeder",
+            "--config",
+            "/path/to/config.toml",
+            "start",
+        ])?;
+        assert_eq!(
+            app.config.as_deref().and_then(std::path::Path::to_str),
+            Some("/path/to/config.toml")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parses_global_config_after_subcommand() -> TestResult {
+        let app = SeederApp::try_parse_from([
+            "zebra-seeder",
+            "start",
+            "--config",
+            "/path/to/config.toml",
+        ])?;
+        assert_eq!(
+            app.config.as_deref().and_then(std::path::Path::to_str),
+            Some("/path/to/config.toml")
+        );
+        Ok(())
     }
 }

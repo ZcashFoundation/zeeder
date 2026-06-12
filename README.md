@@ -100,7 +100,7 @@ Once enabled, metrics are available at `http://localhost:9999/metrics`.
 Monitor these metrics to ensure the seeder is healthy and serving useful data:
 
 -   **`seeder_peers_servable`** (Gauge, labels: `addr_family=v4|v6`): **Critical**. Peers the seeder will hand out: recently handshaked by zebra-network (so version-current and reachable), advertising the full-node service (`NODE_NETWORK`), routable, and on the default Zcash port. If this drops to 0, the seeder is returning empty lists.
--   **`seeder_peers_ineligible`** (Gauge, label: `reason`): Peers excluded this refresh, by reason (`not_routable`, `wrong_port`, `not_recently_live`, `not_full_node`). The dominant reason is normally `not_recently_live` (unverified gossip). Use it to explain a low servable count.
+-   **`seeder_peers_unservable`** (Gauge, label: `reason`): Peers excluded this refresh, by reason (`not_routable`, `wrong_port`, `not_recently_live`, `not_full_node`). The dominant reason is normally `not_recently_live` (unverified gossip). Use it to explain a low servable count.
 -   **`seeder_peers_known`** (Gauge): Raw size of the address book, including unverified and unreachable peers.
 -   **`seeder_min_protocol_version`** (Gauge): The protocol-version floor the handshake enforces (for example `170150` for NU6.2). Confirms which network upgrade peers must meet.
 -   **`seeder_build_info`** (Gauge = 1, labels: `version`, `network`): Build and network identification.
@@ -108,7 +108,7 @@ Monitor these metrics to ensure the seeder is healthy and serving useful data:
 -   **`seeder_dns_response_peers`** (Histogram): How many peers are returned per query. A healthy seeder returns near 25. A downward shift means the servable set is shrinking.
 -   **`seeder_dns_rate_limited_total`** (Counter): **Important**. Queries blocked by rate limiting. High values may indicate an attack or legitimate clients being rate-limited (adjust limits if needed).
 -   **`seeder_dns_errors_total`** (Counter): Should be near zero. Spikes indicate socket handling issues.
--   **`seeder_mutex_poisoning_total`** (Counter, label: `location=cache_updater|metrics_logger`): **Critical**. Should always be zero. Any non-zero value means a thread panicked while holding the address book lock. Investigate immediately and consider restarting the service.
+-   **`seeder_mutex_poisoning_total`** (Counter): **Critical**. Should always be zero. Any non-zero value means a thread panicked while holding the address book lock. Investigate immediately and consider restarting the service.
 
 ## Deployment
 
@@ -155,6 +155,4 @@ This project is licensed under either of:
  * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
-
-
 
