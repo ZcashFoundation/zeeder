@@ -34,10 +34,10 @@ ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR="0.0.0.0:9999"
 
 ### `.env` File
 
-Create `.env` in project root (see [`.env-example.txt`](../.env-example.txt)):
+Create `.env` in project root (see [`.env.example`](../.env.example)):
 
 ```bash
-cp .env-example.txt .env
+cp .env.example .env
 # Edit .env with your values
 ```
 
@@ -101,15 +101,17 @@ services:
     image: zebra-seeder
     restart: unless-stopped
     ports:
-      - "53:53/udp"
-      - "9999:9999"  # metrics
+      - "53:1053/udp"
+      - "53:1053/tcp"
+      - "9999:9999/tcp"  # metrics
     environment:
       ZEBRA_SEEDER__DNS__DOMAIN: "mainnet.seeder.example.com"
       ZEBRA_SEEDER__CRAWLER__NETWORK: "Mainnet"
+      ZEBRA_SEEDER__DNS__LISTEN_ADDR: "0.0.0.0:1053"
       ZEBRA_SEEDER__DNS__TTL: "600"
       ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR: "0.0.0.0:9999"
     volumes:
-      - seeder-cache:/root/.cache/zebra/network  # Persist address book
+      - seeder-cache:/cache
 
 volumes:
   seeder-cache:
@@ -191,6 +193,7 @@ dig @203.0.113.10 mainnet.seeder.example.com A
 ```bash
 # Allow DNS queries
 ufw allow 53/udp
+ufw allow 53/tcp
 
 # Allow metrics (from monitoring network only)
 ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
@@ -206,7 +209,7 @@ ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
 - ✅ Running as non-root user
 - ✅ DNS domain validation (automatic)
 - ✅ Regular security updates
-- ✅ Monitor `seeder_mutex_poisoning_total` metric
+- ✅ Monitor `zebra_seeder_mutex_poisoning_total` metric
 
 ## Monitoring & Operations
 
@@ -218,38 +221,38 @@ ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
 
 | Metric | Type | Labels | Description | Alert If |
 |--------|------|--------|-------------|----------|
-| `seeder_peers_servable` | Gauge | `addr_family=v4\|v6` | Servable peers (recently-live, current-version, outbound, clean) | < 10 |
-| `seeder_peers_unservable` | Gauge | `reason=not_routable\|wrong_port\|not_recently_live\|not_full_node\|inbound\|misbehaving` | Excluded peers, by reason | - |
-| `seeder_peers_known` | Gauge | - | Total peers in the address book | - |
-| `seeder_min_protocol_version` | Gauge | - | Enforced protocol-version floor | changes only at a network upgrade |
-| `seeder_build_info` | Gauge | `version`, `git_sha`, `network` | Build and network identification | - |
-| `seeder_mutex_poisoning_total` | Counter | - | Mutex poisoning events | > 0 |
-| `seeder_dns_rate_limited_total` | Counter | - | Rate-limited queries | Spike indicates attack |
-| `seeder_dns_errors_total` | Counter | - | DNS errors | > 0 (sustained) |
-| `seeder_dns_queries_total` | Counter | `record_type=A\|AAAA\|SOA\|NS` | Total queries | - |
-| `seeder_dns_response_peers` | Histogram | - | Peers per response | - |
+| `zebra_seeder_peers_servable` | Gauge | `addr_family=v4\|v6` | Servable peers (recently-live, current-version, outbound, clean) | < 10 |
+| `zebra_seeder_peers_unservable` | Gauge | `reason=not_routable\|wrong_port\|not_recently_live\|not_full_node\|inbound\|misbehaving` | Excluded peers, by reason | - |
+| `zebra_seeder_peers_known` | Gauge | - | Total peers in the address book | - |
+| `zebra_seeder_min_protocol_version` | Gauge | - | Enforced protocol-version floor | changes only at a network upgrade |
+| `zebra_seeder_build_info` | Gauge | `version`, `git_sha`, `network` | Build and network identification | - |
+| `zebra_seeder_mutex_poisoning_total` | Counter | - | Mutex poisoning events | > 0 |
+| `zebra_seeder_dns_rate_limited_total` | Counter | - | Rate-limited queries | Spike indicates attack |
+| `zebra_seeder_dns_errors_total` | Counter | - | DNS errors | > 0 (sustained) |
+| `zebra_seeder_dns_queries_total` | Counter | `record_type=A\|AAAA\|SOA\|NS` | Total queries | - |
+| `zebra_seeder_dns_response_peers` | Histogram | - | Peers per response | - |
 
 ### Sample Prometheus Queries
 
 **Servable peer count:**
 ```promql
-seeder_peers_servable{addr_family="v4"}
-seeder_peers_servable{addr_family="v6"}
+zebra_seeder_peers_servable{addr_family="v4"}
+zebra_seeder_peers_servable{addr_family="v6"}
 ```
 
 **Query rate (queries/sec):**
 ```promql
-rate(seeder_dns_queries_total[5m])
+rate(zebra_seeder_dns_queries_total[5m])
 ```
 
 **Rate limiting rate:**
 ```promql
-rate(seeder_dns_rate_limited_total[5m])
+rate(zebra_seeder_dns_rate_limited_total[5m])
 ```
 
 **Average peers per response:**
 ```promql
-rate(seeder_dns_response_peers_sum[5m]) / rate(seeder_dns_response_peers_count[5m])
+rate(zebra_seeder_dns_response_peers_sum[5m]) / rate(zebra_seeder_dns_response_peers_count[5m])
 ```
 
 ### Alerting Rules
@@ -261,18 +264,18 @@ groups:
   - name: zebra-seeder
     rules:
       - alert: SeederLowPeerCount
-        expr: seeder_peers_servable < 10
+        expr: zebra_seeder_peers_servable < 10
         for: 15m
         annotations:
           summary: "Seeder has low peer count"
           
       - alert: SeederMutexPoisoned
-        expr: increase(seeder_mutex_poisoning_total[5m]) > 0
+        expr: increase(zebra_seeder_mutex_poisoning_total[5m]) > 0
         annotations:
           summary: "CRITICAL: Mutex poisoning detected"
           
       - alert: SeederHighRateLimiting
-        expr: rate(seeder_dns_rate_limited_total[5m]) > 10
+        expr: rate(zebra_seeder_dns_rate_limited_total[5m]) > 10
         for: 5m
         annotations:
           summary: "High rate limiting (possible attack)"
@@ -359,7 +362,8 @@ docker-compose up -d
 ```
 
 **Cache persistence:**
-- Address book cached in `~/.cache/zebra/network/`
+- Address book cached in `~/.cache/zebra/network/` by default
+- The Docker image sets `XDG_CACHE_HOME=/cache`, so its peer cache lives under `/cache/zebra/network/`
 - Persisting this directory speeds up startup
 - Safe to delete (will rebuild from network)
 

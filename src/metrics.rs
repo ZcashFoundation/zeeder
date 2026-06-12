@@ -4,16 +4,16 @@ use color_eyre::eyre::{Context, Result};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use std::net::SocketAddr;
 
-pub(crate) const PEERS_KNOWN: &str = "seeder_peers_known";
-pub(crate) const PEERS_SERVABLE: &str = "seeder_peers_servable";
-pub(crate) const PEERS_UNSERVABLE: &str = "seeder_peers_unservable";
-pub(crate) const MIN_PROTOCOL_VERSION: &str = "seeder_min_protocol_version";
-pub(crate) const BUILD_INFO: &str = "seeder_build_info";
-pub(crate) const MUTEX_POISONING_TOTAL: &str = "seeder_mutex_poisoning_total";
-pub(crate) const DNS_RATE_LIMITED_TOTAL: &str = "seeder_dns_rate_limited_total";
-pub(crate) const DNS_ERRORS_TOTAL: &str = "seeder_dns_errors_total";
-pub(crate) const DNS_QUERIES_TOTAL: &str = "seeder_dns_queries_total";
-pub(crate) const DNS_RESPONSE_PEERS: &str = "seeder_dns_response_peers";
+pub(crate) const PEERS_KNOWN: &str = "zebra_seeder_peers_known";
+pub(crate) const PEERS_SERVABLE: &str = "zebra_seeder_peers_servable";
+pub(crate) const PEERS_UNSERVABLE: &str = "zebra_seeder_peers_unservable";
+pub(crate) const MIN_PROTOCOL_VERSION: &str = "zebra_seeder_min_protocol_version";
+pub(crate) const BUILD_INFO: &str = "zebra_seeder_build_info";
+pub(crate) const MUTEX_POISONING_TOTAL: &str = "zebra_seeder_mutex_poisoning_total";
+pub(crate) const DNS_RATE_LIMITED_TOTAL: &str = "zebra_seeder_dns_rate_limited_total";
+pub(crate) const DNS_ERRORS_TOTAL: &str = "zebra_seeder_dns_errors_total";
+pub(crate) const DNS_QUERIES_TOTAL: &str = "zebra_seeder_dns_queries_total";
+pub(crate) const DNS_RESPONSE_PEERS: &str = "zebra_seeder_dns_response_peers";
 
 pub(crate) const LABEL_ADDR_FAMILY: &str = "addr_family";
 pub(crate) const LABEL_REASON: &str = "reason";

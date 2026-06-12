@@ -6,15 +6,15 @@ Guide for contributors and developers working on zebra-seeder.
 
 ### Prerequisites
 
-- Rust 1.70+ (`rustup update stable`)
+- Rust from `rust-toolchain.toml` (`1.95.0`, with `clippy` and `rustfmt`)
 - Git
 - Docker (optional, for testing)
 
 ### Clone and Build
 
 ```bash
-git clone https://github.com/zcashfoundation/dnsseederNG
-cd dnsseederNG
+git clone https://github.com/zcashfoundation/zebra-seeder
+cd zebra-seeder
 cargo build
 ```
 
@@ -22,7 +22,7 @@ cargo build
 
 ```bash
 # Copy example environment file
-cp .env-example.txt .env
+cp .env.example .env
 
 # Edit .env for testnet (uses port 1053 to avoid requiring root)
 # ZEBRA_SEEDER__DNS__LISTEN_ADDR="0.0.0.0:1053"
@@ -60,7 +60,7 @@ zebra-seeder/
 ### Key Files
 
 - **`main.rs`**: Entry point, error handling setup
-- **`commands.rs`**: CLI parsing, config loading, server initialization
+- **`commands.rs`**: CLI parsing, config loading, and command dispatch
 - **`config.rs`**: `SeederConfig` struct, configuration loading
 - **`seeder.rs`**: Composition root for crawling, DNS serving, and shutdown
 - **`crawl/`**: Chain tip, peer servability, and servable peer cache
@@ -93,7 +93,7 @@ zebra-seeder/
 **Commands (`commands.rs`):**
 - CLI structure with clap
 - Config loading orchestration
-- Server spawning
+- Metrics initialization and command dispatch
 
 ## Testing
 
@@ -150,7 +150,7 @@ open coverage/index.html
 - **Unit tests**: Inline in source files (e.g., `src/crawl/servability.rs`)
 - **Config tests**: `src/config.rs` (env var handling, defaults)
 - **CLI tests**: `src/commands.rs` (argument parsing)
-- **DNS integration tests**: `src/dns/request_handler.rs` (inline async tests)
+- **DNS handler tests**: `src/dns/request_handler.rs` (inline async tests)
 
 ### Adding Tests
 
@@ -164,7 +164,7 @@ fn test_new_feature() {
 }
 ```
 
-**Async integration test example:**
+**Async handler test example:**
 ```rust
 #[tokio::test]
 async fn test_dns_feature() {
@@ -172,29 +172,16 @@ async fn test_dns_feature() {
 }
 ```
 
-**Property-based test example:**
-```rust
-use proptest::prelude::*;
-
-proptest! {
-    #[test]
-    fn prop_never_panics(input in any::<u32>()) {
-        // Test with random inputs
-    }
-}
-```
-
-For config tests with env vars, use `with_env_lock`:
+For config tests that need environment variables, use `temp_env` so each test scopes its own variables:
 
 ```rust
 #[test]
-fn test_my_config() {
-    with_env_lock(|| {
-        env::set_var("ZEBRA_SEEDER__MY_PARAM", "value");
-        let config = SeederConfig::load_with_env(None).unwrap();
+fn test_my_config() -> color_eyre::Result<()> {
+    temp_env::with_var("ZEBRA_SEEDER__MY_PARAM", Some("value"), || {
+        let config = SeederConfig::load_with_env(None)?;
         assert_eq!(config.my_param, "value");
-        env::remove_var("ZEBRA_SEEDER__MY_PARAM");
-    });
+        Ok(())
+    })
 }
 ```
 
@@ -239,23 +226,23 @@ cargo outdated -R -d 1
 
 ```bash
 # Auto-format code
-cargo fmt
+cargo fmt --all
 
 # Check formatting
-cargo fmt --check
+cargo fmt --all -- --check
 ```
 
 ### Linting
 
 ```bash
 # Run clippy
-cargo clippy -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 ### Pre-commit Checks
 
 ```bash
-# Run all checks (format, clippy, build, test)
+# Run all local validation gates
 ./commit_checks.sh
 ```
 
@@ -336,16 +323,17 @@ fn test_my_param_default() {
 
 ### Adding New Metric
 
-1. Add metric in the module that emits it (for example, `src/dns/request_handler.rs`):
-```rust
-use metrics::{counter, gauge, histogram};
+1. Add the metric name or label to `src/metrics.rs`.
 
-counter!("seeder_my_metric_total").increment(1);
-gauge!("seeder_my_gauge").set(42.0);
-histogram!("seeder_my_histogram").record(10.5);
+2. Emit the metric from the module that owns the event:
+```rust
+use metrics::counter;
+use crate::metrics::MY_METRIC_TOTAL;
+
+counter!(MY_METRIC_TOTAL).increment(1);
 ```
 
-2. Document in `docs/operations.md` metrics table
+3. Document in `docs/operations.md` metrics table.
 
 ### Debugging
 
@@ -361,7 +349,7 @@ RUST_LOG=zebra_seeder=trace cargo run start
 
 **Filter by module:**
 ```bash
-RUST_LOG=zebra_seeder::server=debug cargo run start
+RUST_LOG=zebra_seeder::dns::request_handler=debug cargo run start
 ```
 
 ## Release Process

@@ -1,18 +1,23 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Exit immediately if a command exits with a non-zero status.
-set -e
+set -euo pipefail
 
-echo "Running fmt check..."
+echo "Checking formatting..."
 cargo fmt --all -- --check
 
-echo "Running clippy check..."
-cargo clippy --all-targets --all-features -- -D warnings
+echo "Checking diff whitespace..."
+git diff --check
 
 echo "Building..."
-cargo build --verbose
+cargo build
+
+echo "Running clippy..."
+cargo clippy --all-targets --all-features -- -D warnings
+
+echo "Running cargo tests..."
+cargo test
 
 echo "Running tests with nextest..."
-cargo nextest run 
+cargo nextest run
 
-echo "All checks passed! 🎉"
+echo "All checks passed."

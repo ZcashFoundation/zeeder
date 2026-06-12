@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "A Zcash DNS seeder based on the Zebra architecture."
-repository = "https://github.com/zcashfoundation/dnsseederNG"
+repository = "https://github.com/zcashfoundation/zebra-seeder"
 keywords = ["zcash", "zebra", "dns", "seeder", "blockchain"]
 categories = ["cryptography::cryptocurrencies", "network-programming"]
 
@@ -20,8 +20,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 color-eyre = "0.6"
 tower = { version = "0.5", features = ["util"] }
-# Zebra dependencies - assuming latest published versions or git if needed.
-# For scaffolding, we use version wildcards or recent versions to ensure compilation starts.
 zebra-network = "8.0.0"
 zebra-chain = "9.0.0"
 dotenvy = "0.15.7"
@@ -35,7 +33,6 @@ governor = "0.10"
 toml = "1"
 
 [dev-dependencies]
-hickory-resolver = "0.26.1"
 temp-env = "0.3"
 
 [build-dependencies]

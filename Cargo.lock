@@ -5488,7 +5488,6 @@ dependencies = [
  "governor",
  "hickory-dns",
  "hickory-proto",
- "hickory-resolver",
  "hickory-server",
  "metrics",
  "metrics-exporter-prometheus",

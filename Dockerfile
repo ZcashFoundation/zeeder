@@ -1,27 +1,30 @@
 # Builder stage
-FROM rust:1-trixie as builder
+FROM rust:1-trixie AS builder
 
 WORKDIR /app
 
 # Copy source code
 COPY . .
 
-# Build the release binary
-RUN cargo build --release
+# Build the release binary and prepare the runtime cache mount point.
+RUN cargo build --release && mkdir -p /app/cache
 
 # Runtime stage
-# User requested Trixie (Debian 13) to match builder's glibc version.
 FROM gcr.io/distroless/cc-debian13
 
 WORKDIR /app
 
-# Copy the binary from the builder stage
-COPY --from=builder /app/target/release/zebra-seeder /app/zebra-seeder
+# Run as distroless nonroot and keep Zebra's peer cache out of /root.
+ENV XDG_CACHE_HOME=/cache \
+    ZEBRA_SEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053
 
-# Documentation for exposed ports
+COPY --from=builder --chown=65532:65532 /app/target/release/zebra-seeder /app/zebra-seeder
+COPY --from=builder --chown=65532:65532 /app/cache /cache
+
 # 1053: DNS (UDP/TCP)
-# 9999: Metrics (TCP) - optional, disabled by default
+# 9999: Metrics (TCP)
 EXPOSE 1053/udp 1053/tcp 9999/tcp
 
-# Set the entrypoint
+USER 65532:65532
+
 ENTRYPOINT ["/app/zebra-seeder", "start"]

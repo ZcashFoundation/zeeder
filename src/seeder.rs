@@ -11,7 +11,10 @@ use zebra_chain::chain_tip::ChainTip;
 use crate::{
     config::SeederConfig,
     crawl::{address_cache, chain_tip},
-    dns::{rate_limiter::RateLimiter, request_handler::DnsRequestHandler},
+    dns::{
+        rate_limiter::RateLimiter,
+        request_handler::{DnsRequestHandler, SeedZone},
+    },
     metrics::{BUILD_INFO, LABEL_GIT_SHA, LABEL_NETWORK, LABEL_VERSION, MIN_PROTOCOL_VERSION},
 };
 
@@ -22,6 +25,7 @@ struct DnsSockets {
 
 /// Run the seeder until the DNS server exits or the process receives a shutdown signal.
 pub(crate) async fn run(config: SeederConfig) -> Result<()> {
+    let seed_zone = SeedZone::new(&config.dns.domain, config.dns.ttl)?;
     let dns_sockets = bind_dns_sockets(config.dns.listen_addr).await?;
 
     tracing::info!("Initializing zebra-network...");
@@ -75,12 +79,7 @@ pub(crate) async fn run(config: SeederConfig) -> Result<()> {
 
     let servable_peers = address_cache::spawn(address_book.clone(), network);
 
-    let request_handler = DnsRequestHandler::new(
-        servable_peers,
-        &config.dns.domain,
-        config.dns.ttl,
-        rate_limiter,
-    )?;
+    let request_handler = DnsRequestHandler::new(servable_peers, seed_zone, rate_limiter);
     let mut server = Server::new(request_handler);
 
     server.register_socket(dns_sockets.udp_socket);

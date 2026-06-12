@@ -32,7 +32,7 @@ graph TD
 
 ### Startup Sequence
 
-1. Load configuration (env vars → TOML → defaults)
+1. Load configuration (defaults, optional TOML file, then environment overrides)
 2. Initialize metrics endpoint (if enabled)
 3. Bind DNS UDP and TCP sockets, failing before P2P startup if the configured address is unavailable
 4. Initialize zebra-network with address book
@@ -147,8 +147,6 @@ sequenceDiagram
 - Read the Address Book for servable peers
 - Never send blockchain data (we're not a full node)
 
-**Files:** `src/seeder.rs` (initialization), `src/crawl/chain_tip.rs` (protocol-version floor)
-
 ---
 
 ### hickory-dns Server
@@ -165,8 +163,6 @@ sequenceDiagram
 - Handle A, AAAA, SOA, and NS queries at the configured seed name
 - Return NODATA plus SOA for unsupported exact-name queries and deeper in-zone labels
 - Return REFUSED for unauthorized domains
-
-**Files:** `src/dns/request_handler.rs`
 
 ---
 
@@ -186,9 +182,7 @@ sequenceDiagram
 
 **Behavior:**
 - Rate-limited requests: dropped silently (no response)
-- Metric: `seeder_dns_rate_limited_total`
-
-**Files:** `src/dns/rate_limiter.rs`, `src/config.rs` (`RateLimitConfig`)
+- Metric: `zebra_seeder_dns_rate_limited_total`
 
 ---
 
@@ -206,32 +200,15 @@ sequenceDiagram
 - Uses `tokio::sync::watch` channel for lock-free reads
 - DNS queries read from cache without any locking
 
-**Implementation:**
-```rust
-struct ServablePeers {
-    ipv4: Vec<PeerSocketAddr>,  // Pre-filtered, shuffled
-    ipv6: Vec<PeerSocketAddr>,  // Pre-filtered, shuffled
-}
-
-// Cache updater runs every 5 seconds:
-// 1. Lock address book
-// 2. Classify peers (crawl::servability); keep servable ones
-// 3. Shuffle and take 25 each (per address family)
-// 4. Send to watch channel
-
-// DNS handler reads without locking:
-let peers = match record_type {
-    A => cache.borrow().ipv4.clone(),
-    AAAA => cache.borrow().ipv6.clone(),
-};
-```
+**Behavior:**
+- Cache refresh takes one address-book lock every 5 seconds.
+- Each refresh classifies peers, separates IPv4 and IPv6 addresses, shuffles each family, and caps each answer set at 25.
+- DNS handlers read the current snapshot through a watch channel without taking the address-book lock.
 
 **Trade-offs:**
 - ✅ Zero lock contention during DNS queries
 - ✅ Predictable low-latency responses
 - ⚠️ Peer list may be up to 5 seconds stale (acceptable for DNS seeding)
-
-**Files:** `src/crawl/address_cache.rs`
 
 ---
 
@@ -266,7 +243,7 @@ Servable peers are then separated by address family (IPv4/IPv6), shuffled, and c
 
 ### Configuration System
 
-**Layered priority:**
+**Override priority:**
 1. Environment variables (`ZEBRA_SEEDER__*`)
 2. TOML config file
 3. Hardcoded defaults
@@ -276,168 +253,18 @@ Servable peers are then separated by address family (IPv4/IPv6), shuffled, and c
 - `serde` for deserialization
 - `.env` file support via `dotenvy`
 
-**Files:** `src/config.rs`, `src/commands.rs`
-
 ---
 
 ### Metrics
 
-**Prometheus metrics exposed on configurable endpoint (default `:9999/metrics`)**
-
-**Key metrics:**
-- `seeder_peers_known` - Total peers in the address book (gauge)
-- `seeder_peers_servable` - Servable peers by address family (gauge, `addr_family`)
-- `seeder_peers_unservable` - Excluded peers by reason (gauge, `reason`)
-- `seeder_min_protocol_version` - Enforced protocol-version floor (gauge)
-- `seeder_build_info` - Build and network identification (gauge, `version`/`git_sha`/`network`)
-- `seeder_dns_queries_total` - DNS queries by record type (counter)
-- `seeder_dns_response_peers` - Peers per response (histogram)
-- `seeder_dns_rate_limited_total` - Rate-limited queries (counter)
-- `seeder_dns_errors_total` - DNS errors (counter)
-- `seeder_mutex_poisoning_total` - Mutex poisoning events (counter)
-
-**Files:** `src/metrics.rs`, `src/seeder.rs`, `src/crawl/address_cache.rs`, `src/dns/request_handler.rs`
+Prometheus metrics are exposed on the configured metrics endpoint. Architecture-level metrics are grouped around peer servability, DNS traffic, rate limiting, mutex poisoning, protocol-version floor, and build identity. The canonical metric reference, labels, and alert guidance live in [Operations](operations.md#metrics).
 
 ## Architecture Decision Records
 
-### ADR 001: Use zebra-network for Peer Discovery
-
-**Status:** Accepted
-
-**Context:**  
-We need to crawl the Zcash network to discover and maintain a list of healthy peers.
-
-**Decision:**  
-Use the `zebra-network` crate instead of implementing custom P2P networking.
-
-**Rationale:**
-- **Proven**: Battle-tested in Zebra full node
-- **Avoids duplication**: Complex P2P logic already implemented
-- **Protocol compatibility**: Follows Zcash protocol exactly
-- **Maintenance**: Benefits from ongoing Zebra improvements
-- **Reduced bugs**: Don't recreate peer discovery, connection management, etc.
-
-**Consequences:**
-- ✅ Faster development
-- ✅ Reduced bug surface
-- ✅ Protocol compliance guaranteed
-- ⚠️ Dependency on zebra-network versions
-- ⚠️ Must track Zebra releases for updates
-
-**Alternatives Considered:**
-- Custom P2P implementation - Rejected (too complex, high bug risk)
-- libp2p - Rejected (incompatible with Zcash protocol)
-
----
-
-### ADR 002: Use hickory-dns for DNS Server
-
-**Status:** Accepted
-
-**Context:**  
-We need to serve DNS A/AAAA records to clients querying for Zcash peers.
-
-**Decision:**  
-Use the `hickory-dns` crate (formerly trust-dns) for DNS serving. The seeder is authoritative for the exact configured `dns.domain`: A/AAAA queries return servable peers, SOA/NS queries return synthesized zone metadata, unsupported exact-name queries return NODATA with SOA, deeper in-zone names return NODATA with SOA, and out-of-zone names return REFUSED.
-
-**Rationale:**
-- **Mature**: Industry-standard Rust DNS implementation
-- **RFC compliant**: Handles DNS protocol complexities correctly
-- **Async native**: Works with tokio ecosystem
-- **Feature-rich**: Supports all DNS record types we need
-- **Tower integration**: Modern request/response abstraction
-
-**Consequences:**
-- ✅ Correct DNS protocol handling
-- ✅ Good performance
-- ✅ Well-maintained
-- ✅ Negative answers are cacheable because NODATA responses include SOA.
-- ✅ Subdomain queries do not expand the peer-serving surface.
-- ⚠️ Additional dependency
-- ⚠️ Learning curve for API
-
-**Revision History:**
-- 2026-06-11: Completed the authoritative DNS contract: exact seed-name matching, SOA/NS answers, and SOA-backed NODATA responses.
-
-**Alternatives Considered:**
-- Custom DNS parser - Rejected (too complex, error-prone, RFC compliance burden)
-- trust-dns (old name) - N/A (hickory-dns is the successor)
-
----
-
-### ADR 003: Implement Per-IP Rate Limiting
-
-**Status:** Accepted
-
-**Context:**  
-DNS seeders on UDP port 53 are vulnerable to DNS amplification attacks where:
-- Attackers forge source IP addresses
-- Small queries trigger large responses
-- Our seeder becomes a DDoS weapon
-
-**Decision:**  
-Implement per-IP rate limiting using `governor` crate:
-- 10 queries/second per IP (default, configurable)
-- Burst capacity of 20
-- Silent packet dropping (no REFUSED response)
-
-**Rationale:**
-- **Security**: Prevents amplification attacks
-- **Fairness**: No single IP can monopolize resources
-- **Performance**: <1ms overhead with DashMap
-- **Configurability**: Operators can tune based on traffic
-- **Silent drops**: Avoid amplification (no error responses)
-
-**Implementation:**
-- `governor` crate for token bucket algorithm (GCRA)
-- `DashMap` for per-IP tracking across threads in a single map
-- Each IP gets isolated rate limiter instance
-- Metrics track rate-limited requests
-
-**Consequences:**
-- ✅ Cannot be weaponized for DDoS
-- ✅ Fair resource allocation
-- ✅ Minimal performance impact
-- ⚠️ Legitimate high-volume clients may be rate-limited
-- ⚠️ Memory grows with unique IPs (acceptable: ~200 bytes/IP)
-
-**Alternatives Considered:**
-- No rate limiting - Rejected (unacceptable security risk)
-- Global rate limit - Rejected (single client could DoS all others)
-- Response size limiting - Rejected (insufficient, still allows amplification)
-
----
-
-### ADR 004: Peer Servability and Protocol-Version Floor
-
-**Status:** Accepted
-
-**Context:**
-zebra-network's address book stores every peer it learns about, in every connection state, including `NeverAttemptedGossiped` addresses it has never contacted. `MetaAddr` carries no protocol version, so the seeder cannot filter served peers by version after the fact. The seeder also runs with no chain state, and zebra-network derives the handshake's minimum acceptable protocol version from the chain tip it is given.
-
-**Decision:**
-Serve a peer only when it is *servable*: recently handshaked (`was_recently_live`), advertising the full-node service (`NODE_NETWORK`), routable, on the network default port, not inbound, and carrying no zebra-network misbehavior score. Implement the decision once in `crawl::servability`. Leave banning to zebra-network, which removes a banned peer from the address book before the seeder classifies it. Replace `NoChainTip` with a `SeederChainTip` pinned to the current network upgrade's activation height, so zebra-network's handshake enforces that upgrade's protocol-version floor and outdated peers never reach the address book.
-
-**Rationale:**
-- A recent handshake transitively proves the peer passed the version floor and advertised the network service, so liveness and version-correctness are a single check.
-- The floor is derived from zebra-chain's activation table, so it tracks future upgrades on a dependency bump rather than via a hardcoded constant.
-- The seeder mirrors zebra-network's own GetAddr sanitization for peer provenance and quality: inbound-provenance peers and peers with non-zero misbehavior scores are not advertised to others.
-- The seeder only enforces what DNS structurally requires (routable IP, default port, address family) plus the same advertisement gates zebra-network applies to its own peer gossip.
-- No second peer database and no active probing: zebra-network already crawls, handshakes, and tracks liveness (honoring ADR 001).
-
-**Consequences:**
-- ✅ Outdated-version and unverified-gossip peers are no longer served (issue #19).
-- ✅ Inbound-provenance and misbehaving peers are no longer advertised over DNS.
-- ✅ One tested predicate; rejection reasons are exported via `seeder_peers_unservable{reason}`.
-- ⚠️ The served set is smaller than the raw address book; on sparse networks (testnet, IPv6) it can be thin. Watch `seeder_peers_servable`.
-- ⚠️ The floor reaches the highest upgrade the pinned zebra activates (NU6.2 today); full NU7 enforcement arrives when a future zebra release activates it. A tripwire test pins the expected floor.
-
-**Revision History:**
-- 2026-06-11: Added inbound and non-zero-misbehavior gates to match zebra-network's `MetaAddr::sanitize` advertisement policy.
-
-**Alternatives Considered:**
-- Active per-peer probing (sipa bitcoin-seeder style) - Rejected: duplicates zebra-network's crawling and contradicts ADR 001.
-- A configurable version override - Rejected: the derived floor tracks upgrades automatically; an override invites pointing nodes at the wrong fork.
+- [ADR 0001: Use zebra-network for Peer Discovery](adr/0001-zebra-network.md)
+- [ADR 0002: Use hickory-dns for DNS Server](adr/0002-hickory-dns.md)
+- [ADR 0003: Implement Per-IP Rate Limiting](adr/0003-rate-limiting.md)
+- [ADR 0004: Peer Servability and Protocol-Version Floor](adr/0004-peer-servability.md)
 
 ## Design Principles
 

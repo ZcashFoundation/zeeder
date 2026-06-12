@@ -1,23 +1,19 @@
+name: zebra-seeder
+
 services:
   seeder:
     build: .
     restart: unless-stopped
     ports:
-      # Map DNS ports (Host:Container)
-      # DNS over TCP is questionnably necessary
-      # note that clients will expect to connect to port 53, but we bind to 1053 to avoid needing to run as root
-      # for prod use expose ports 53/udp and 53/tcp OR use a reverse proxy or upstream port forwarding rules to forward traffic to port 1053
-      - "1053:1053/udp"
-      - "1053:1053/tcp"
-      # Metrics port (Uncomment to expose if enabled via env var)
+      # Host DNS port 53 maps to the container's non-root DNS port.
+      - "53:1053/udp"
+      - "53:1053/tcp"
       - "9999:9999/tcp"
     volumes:
-      - ./cache:/root/.cache/zebra/network
+      - ./cache:/cache
     environment:
-      # Example configuration
       - ZEBRA_SEEDER__CRAWLER__NETWORK=Testnet
       - ZEBRA_SEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053
       - ZEBRA_SEEDER__DNS__DOMAIN=testnet.seeder.example.com
       - ZEBRA_SEEDER__DNS__TTL=600
-      # Enable metrics by uncommenting:
       - ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR=0.0.0.0:9999
