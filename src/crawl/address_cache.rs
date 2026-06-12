@@ -7,7 +7,13 @@ use tokio::sync::watch;
 use zebra_chain::parameters::Network;
 use zebra_network::{AddressBook, PeerSocketAddr};
 
-use crate::crawl::servability::{UnservableReason, classify_peer};
+use crate::{
+    crawl::servability::{UnservableReason, classify_peer},
+    metrics::{
+        ADDR_FAMILY_IPV4, ADDR_FAMILY_IPV6, LABEL_ADDR_FAMILY, LABEL_REASON, MUTEX_POISONING_TOTAL,
+        PEERS_KNOWN, PEERS_SERVABLE, PEERS_UNSERVABLE,
+    },
+};
 
 /// Maximum addresses returned per DNS query, per address family.
 const MAX_DNS_RESPONSE_PEERS: usize = 25;
@@ -50,7 +56,7 @@ pub(crate) fn spawn(
                         tracing::error!(
                             "address book mutex poisoned during cache update, recovering"
                         );
-                        counter!("seeder_mutex_poisoning_total").increment(1);
+                        counter!(MUTEX_POISONING_TOTAL).increment(1);
                         poisoned.into_inner()
                     }
                 };
@@ -95,11 +101,11 @@ fn servable_peers(book: &AddressBook, network: &Network, should_log_status: bool
         }
     }
 
-    gauge!("seeder_peers_known").set(book.len() as f64);
-    gauge!("seeder_peers_servable", "addr_family" => "v4").set(ipv4.len() as f64);
-    gauge!("seeder_peers_servable", "addr_family" => "v6").set(ipv6.len() as f64);
+    gauge!(PEERS_KNOWN).set(book.len() as f64);
+    gauge!(PEERS_SERVABLE, LABEL_ADDR_FAMILY => ADDR_FAMILY_IPV4).set(ipv4.len() as f64);
+    gauge!(PEERS_SERVABLE, LABEL_ADDR_FAMILY => ADDR_FAMILY_IPV6).set(ipv6.len() as f64);
     for reason in UnservableReason::ALL {
-        gauge!("seeder_peers_unservable", "reason" => reason.label())
+        gauge!(PEERS_UNSERVABLE, LABEL_REASON => reason.label())
             .set(unservable.get(&reason).copied().unwrap_or(0) as f64);
     }
 
@@ -187,6 +193,52 @@ mod tests {
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "a recently-live non-full-node peer must not be served"
+        );
+    }
+
+    #[test]
+    fn recently_connected_inbound_peer_is_not_servable() {
+        let mut book = empty_book();
+        book.update(MetaAddr::new_connected(
+            peer([1, 2, 3, 4], 8233),
+            &PeerServices::NODE_NETWORK,
+            true,
+        ));
+
+        let peers = servable_peers(&book, &Network::Mainnet, false);
+        assert!(
+            peers.ipv4.is_empty() && peers.ipv6.is_empty(),
+            "an inbound peer must not be served"
+        );
+    }
+
+    #[test]
+    fn sub_ban_misbehaving_peer_is_not_servable() {
+        let mut book = empty_book();
+        let addr = peer([1, 2, 3, 4], 8233);
+        let misbehavior_score = MAX_PEER_MISBEHAVIOR_SCORE - 1;
+        book.update(MetaAddr::new_connected(
+            addr,
+            &PeerServices::NODE_NETWORK,
+            false,
+        ));
+        book.update(MetaAddr::new_misbehavior(addr, misbehavior_score));
+
+        assert_eq!(
+            book.len(),
+            1,
+            "a sub-ban misbehaving peer remains in the address book"
+        );
+        assert!(
+            book.peers()
+                .any(|meta| meta.misbehavior() == misbehavior_score),
+            "the peer should carry the sub-ban misbehavior score"
+        );
+
+        let peers = servable_peers(&book, &Network::Mainnet, false);
+        assert!(
+            peers.ipv4.is_empty() && peers.ipv6.is_empty(),
+            "a misbehaving peer must not be served"
         );
     }
 

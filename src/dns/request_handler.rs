@@ -5,7 +5,10 @@ use std::net::IpAddr;
 use color_eyre::eyre::{Context, Result};
 use hickory_proto::{
     op::{Header, HeaderCounts, Metadata, ResponseCode},
-    rr::{LowerName, Name, RData, Record, RecordType},
+    rr::{
+        LowerName, Name, RData, Record, RecordType,
+        rdata::{NS, SOA},
+    },
 };
 use hickory_server::{
     net::runtime::Time,
@@ -17,15 +20,62 @@ use tokio::sync::watch;
 use tracing::{Instrument, info_span};
 use zebra_network::PeerSocketAddr;
 
-use crate::{crawl::address_cache::ServablePeers, dns::rate_limiter::RateLimiter};
+use crate::{
+    crawl::address_cache::ServablePeers,
+    dns::rate_limiter::RateLimiter,
+    metrics::{
+        DNS_ERRORS_TOTAL, DNS_QUERIES_TOTAL, DNS_RATE_LIMITED_TOTAL, DNS_RESPONSE_PEERS,
+        LABEL_RECORD_TYPE, RECORD_TYPE_A, RECORD_TYPE_AAAA, RECORD_TYPE_NS, RECORD_TYPE_SOA,
+    },
+};
+
+const SOA_SERIAL: u32 = 1;
+const SOA_REFRESH_SECONDS: i32 = 3_600;
+const SOA_RETRY_SECONDS: i32 = 600;
+const SOA_EXPIRE_SECONDS: i32 = 86_400;
 
 /// Hickory request handler for the seed domain.
 #[derive(Clone)]
 pub(crate) struct DnsRequestHandler {
     servable_peers: watch::Receiver<ServablePeers>,
     seed_domain: LowerName,
+    zone_records: ZoneRecords,
     dns_ttl: u32,
     rate_limiter: Option<RateLimiter>,
+}
+
+#[derive(Clone)]
+struct ZoneRecords {
+    soa: Record,
+    nameserver: Record,
+}
+
+impl ZoneRecords {
+    fn new(seed_domain: Name, dns_ttl: u32) -> Result<Self> {
+        let seed_domain_ascii = seed_domain.to_ascii();
+        let nameserver_name =
+            Name::from_ascii(format!("ns.{seed_domain_ascii}")).wrap_err_with(|| {
+                format!("invalid synthesized nameserver for `{seed_domain_ascii}`")
+            })?;
+        let responsible_mailbox = Name::from_ascii(format!("hostmaster.{seed_domain_ascii}"))
+            .wrap_err_with(|| {
+                format!("invalid synthesized SOA mailbox for `{seed_domain_ascii}`")
+            })?;
+        let soa = SOA::new(
+            nameserver_name.clone(),
+            responsible_mailbox,
+            SOA_SERIAL,
+            SOA_REFRESH_SECONDS,
+            SOA_RETRY_SECONDS,
+            SOA_EXPIRE_SECONDS,
+            dns_ttl,
+        );
+
+        Ok(Self {
+            soa: Record::from_rdata(seed_domain.clone(), dns_ttl, RData::SOA(soa)),
+            nameserver: Record::from_rdata(seed_domain, dns_ttl, RData::NS(NS(nameserver_name))),
+        })
+    }
 }
 
 impl DnsRequestHandler {
@@ -38,10 +88,12 @@ impl DnsRequestHandler {
     ) -> Result<Self> {
         let seed_domain = Name::from_ascii(seed_domain)
             .wrap_err_with(|| format!("invalid seed domain `{seed_domain}`"))?;
+        let zone_records = ZoneRecords::new(seed_domain.clone(), dns_ttl)?;
 
         Ok(Self {
             servable_peers,
             seed_domain: LowerName::from(seed_domain),
+            zone_records,
             dns_ttl,
             rate_limiter,
         })
@@ -51,7 +103,9 @@ impl DnsRequestHandler {
 #[derive(Debug, PartialEq, Eq)]
 enum DnsAnswer<'a> {
     Refused,
-    Empty,
+    NoData,
+    Nameserver,
+    StartOfAuthority,
     Peers {
         peers: &'a [PeerSocketAddr],
         record_type_label: &'static str,
@@ -67,6 +121,9 @@ fn resolve_dns_answer<'a>(
     if !seed_domain.zone_of(query_name) {
         return DnsAnswer::Refused;
     }
+    if query_name.num_labels() != seed_domain.num_labels() {
+        return DnsAnswer::NoData;
+    }
 
     #[allow(
         clippy::wildcard_enum_match_arm,
@@ -75,13 +132,15 @@ fn resolve_dns_answer<'a>(
     match record_type {
         RecordType::A => DnsAnswer::Peers {
             peers: &servable_peers.ipv4,
-            record_type_label: "A",
+            record_type_label: RECORD_TYPE_A,
         },
         RecordType::AAAA => DnsAnswer::Peers {
             peers: &servable_peers.ipv6,
-            record_type_label: "AAAA",
+            record_type_label: RECORD_TYPE_AAAA,
         },
-        _ => DnsAnswer::Empty,
+        RecordType::NS => DnsAnswer::Nameserver,
+        RecordType::SOA => DnsAnswer::StartOfAuthority,
+        _ => DnsAnswer::NoData,
     }
 }
 
@@ -114,7 +173,7 @@ impl DnsRequestHandler {
 
             if !limiter.check(client_ip) {
                 tracing::warn!("Rate limit exceeded for {client_ip}");
-                counter!("seeder_dns_rate_limited_total").increment(1);
+                counter!(DNS_RATE_LIMITED_TOTAL).increment(1);
 
                 // Drop the request silently to prevent amplification.
                 return ResponseInfo::from(Header {
@@ -128,58 +187,68 @@ impl DnsRequestHandler {
             clippy::option_if_let_else,
             reason = "the query branch mutates response metadata, so if-let keeps that side effect visible"
         )]
-        let records: Vec<Record> = if let Some(query) = request.queries.queries().first() {
-            let name = query.name();
-            let record_type = query.query_type();
+        let (records, soa_records): (Vec<Record>, Vec<Record>) =
+            if let Some(query) = request.queries.queries().first() {
+                let name = query.name();
+                let record_type = query.query_type();
 
-            let servable_peers = self.servable_peers.borrow();
-            match resolve_dns_answer(name, record_type, &self.seed_domain, &servable_peers) {
-                DnsAnswer::Refused => {
-                    metadata.response_code = ResponseCode::Refused;
-                    Vec::new()
+                let servable_peers = self.servable_peers.borrow();
+                match resolve_dns_answer(name, record_type, &self.seed_domain, &servable_peers) {
+                    DnsAnswer::Refused => {
+                        metadata.response_code = ResponseCode::Refused;
+                        (Vec::new(), Vec::new())
+                    }
+                    DnsAnswer::NoData => (Vec::new(), vec![self.zone_records.soa.clone()]),
+                    DnsAnswer::Nameserver => {
+                        counter!(DNS_QUERIES_TOTAL, &[(LABEL_RECORD_TYPE, RECORD_TYPE_NS)])
+                            .increment(1);
+                        (vec![self.zone_records.nameserver.clone()], Vec::new())
+                    }
+                    DnsAnswer::StartOfAuthority => {
+                        counter!(DNS_QUERIES_TOTAL, &[(LABEL_RECORD_TYPE, RECORD_TYPE_SOA)])
+                            .increment(1);
+                        (vec![self.zone_records.soa.clone()], Vec::new())
+                    }
+                    DnsAnswer::Peers {
+                        peers,
+                        record_type_label,
+                    } => {
+                        #[allow(
+                            clippy::cast_precision_loss,
+                            reason = "histogram sample of a small peer count"
+                        )]
+                        histogram!(DNS_RESPONSE_PEERS).record(peers.len() as f64);
+                        counter!(DNS_QUERIES_TOTAL, &[(LABEL_RECORD_TYPE, record_type_label)])
+                            .increment(1);
+
+                        let records = peers
+                            .iter()
+                            .copied()
+                            .map(|addr| {
+                                let rdata = match addr.ip() {
+                                    IpAddr::V4(ipv4) => RData::A(hickory_proto::rr::rdata::A(ipv4)),
+                                    IpAddr::V6(ipv6) => {
+                                        RData::AAAA(hickory_proto::rr::rdata::AAAA(ipv6))
+                                    }
+                                };
+                                Record::from_rdata(name.clone().into(), self.dns_ttl, rdata)
+                            })
+                            .collect();
+
+                        (records, Vec::new())
+                    }
                 }
-                DnsAnswer::Empty => Vec::new(),
-                DnsAnswer::Peers {
-                    peers,
-                    record_type_label,
-                } => {
-                    #[allow(
-                        clippy::cast_precision_loss,
-                        reason = "histogram sample of a small peer count"
-                    )]
-                    histogram!("seeder_dns_response_peers").record(peers.len() as f64);
-                    counter!(
-                        "seeder_dns_queries_total",
-                        &[("record_type", record_type_label)]
-                    )
-                    .increment(1);
+            } else {
+                (Vec::new(), Vec::new())
+            };
 
-                    peers
-                        .iter()
-                        .copied()
-                        .map(|addr| {
-                            let rdata = match addr.ip() {
-                                IpAddr::V4(ipv4) => RData::A(hickory_proto::rr::rdata::A(ipv4)),
-                                IpAddr::V6(ipv6) => {
-                                    RData::AAAA(hickory_proto::rr::rdata::AAAA(ipv6))
-                                }
-                            };
-                            Record::from_rdata(name.clone().into(), self.dns_ttl, rdata)
-                        })
-                        .collect()
-                }
-            }
-        } else {
-            Vec::new()
-        };
-
-        let response = builder.build(metadata, records.iter(), &[], &[], &[]);
+        let response = builder.build(metadata, records.iter(), &[], soa_records.iter(), &[]);
         response_handle
             .send_response(response)
             .await
             .inspect_err(|e| {
                 tracing::warn!("failed to send DNS response: {e}");
-                counter!("seeder_dns_errors_total").increment(1);
+                counter!(DNS_ERRORS_TOTAL).increment(1);
             })
             .unwrap_or_else(|_| {
                 ResponseInfo::from(Header {
@@ -292,14 +361,14 @@ mod tests {
             answer,
             DnsAnswer::Peers {
                 peers: &peers.ipv4,
-                record_type_label: "A"
+                record_type_label: RECORD_TYPE_A
             }
         );
         Ok(())
     }
 
     #[test]
-    fn answers_subdomain_queries_under_seed_domain() -> TestResult {
+    fn subdomain_queries_under_seed_domain_return_no_data() -> TestResult {
         let peers = servable_peers();
         let answer = resolve_dns_answer(
             &lower_name("node.mainnet.seeder.test")?,
@@ -308,13 +377,7 @@ mod tests {
             &peers,
         );
 
-        assert_eq!(
-            answer,
-            DnsAnswer::Peers {
-                peers: &peers.ipv6,
-                record_type_label: "AAAA"
-            }
-        );
+        assert_eq!(answer, DnsAnswer::NoData);
         Ok(())
     }
 
@@ -332,7 +395,7 @@ mod tests {
             answer,
             DnsAnswer::Peers {
                 peers: &peers.ipv4,
-                record_type_label: "A"
+                record_type_label: RECORD_TYPE_A
             }
         );
         Ok(())
@@ -352,7 +415,7 @@ mod tests {
             answer,
             DnsAnswer::Peers {
                 peers: &peers.ipv4,
-                record_type_label: "A"
+                record_type_label: RECORD_TYPE_A
             }
         );
         Ok(())
@@ -384,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn returns_empty_answer_for_unsupported_record_types() -> TestResult {
+    fn answers_nameserver_queries_for_seed_domain() -> TestResult {
         let peers = servable_peers();
 
         assert_eq!(
@@ -394,8 +457,31 @@ mod tests {
                 &lower_name("mainnet.seeder.test")?,
                 &peers,
             ),
-            DnsAnswer::Empty
+            DnsAnswer::Nameserver
         );
+        Ok(())
+    }
+
+    #[test]
+    fn answers_start_of_authority_queries_for_seed_domain() -> TestResult {
+        let peers = servable_peers();
+
+        assert_eq!(
+            resolve_dns_answer(
+                &lower_name("mainnet.seeder.test")?,
+                RecordType::SOA,
+                &lower_name("mainnet.seeder.test")?,
+                &peers,
+            ),
+            DnsAnswer::StartOfAuthority
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn returns_no_data_for_unsupported_record_types() -> TestResult {
+        let peers = servable_peers();
+
         assert_eq!(
             resolve_dns_answer(
                 &lower_name("mainnet.seeder.test")?,
@@ -403,7 +489,7 @@ mod tests {
                 &lower_name("mainnet.seeder.test")?,
                 &peers,
             ),
-            DnsAnswer::Empty
+            DnsAnswer::NoData
         );
         Ok(())
     }
@@ -422,7 +508,7 @@ mod tests {
             answer,
             DnsAnswer::Peers {
                 peers: &peers.ipv4,
-                record_type_label: "A"
+                record_type_label: RECORD_TYPE_A
             }
         );
         Ok(())
@@ -438,6 +524,33 @@ mod tests {
         );
 
         assert!(result.is_err(), "invalid seed domain should fail startup");
+    }
+
+    #[test]
+    fn synthesizes_zone_records_for_seed_domain() -> TestResult {
+        let handler = DnsRequestHandler::new(
+            servable_peers_receiver(ServablePeers::default()),
+            "mainnet.seeder.test",
+            300,
+            None,
+        )?;
+
+        assert_eq!(
+            handler.zone_records.soa.name.to_ascii(),
+            "mainnet.seeder.test"
+        );
+        assert_eq!(
+            handler.zone_records.nameserver.name.to_ascii(),
+            "mainnet.seeder.test"
+        );
+        assert_eq!(handler.zone_records.soa.ttl, 300);
+        assert_eq!(handler.zone_records.nameserver.ttl, 300);
+        assert!(matches!(&handler.zone_records.soa.data, RData::SOA(_)));
+        assert!(matches!(
+            &handler.zone_records.nameserver.data,
+            RData::NS(_)
+        ));
+        Ok(())
     }
 
     #[tokio::test]
@@ -493,6 +606,42 @@ mod tests {
             .lookup("wrong.domain.test", hickory_proto::rr::RecordType::A)
             .await;
         assert!(lookup.is_err(), "query for wrong domain should fail");
+
+        handle.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn serves_zone_metadata_records() -> TestResult {
+        let request_handler = DnsRequestHandler::new(
+            servable_peers_receiver(ServablePeers::default()),
+            "mainnet.seeder.test",
+            600,
+            None,
+        )?;
+
+        let (server_addr, handle) = create_test_dns_server(request_handler).await?;
+        let resolver = create_test_resolver(server_addr)?;
+
+        let soa = resolver
+            .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::SOA)
+            .await?;
+        assert!(
+            soa.answers()
+                .iter()
+                .any(|record| matches!(&record.data, RData::SOA(_))),
+            "SOA query should return an SOA record"
+        );
+
+        let ns = resolver
+            .lookup("mainnet.seeder.test", hickory_proto::rr::RecordType::NS)
+            .await?;
+        assert!(
+            ns.answers()
+                .iter()
+                .any(|record| matches!(&record.data, RData::NS(_))),
+            "NS query should return an NS record"
+        );
 
         handle.abort();
         Ok(())

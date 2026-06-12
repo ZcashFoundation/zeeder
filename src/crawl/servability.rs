@@ -3,9 +3,10 @@
 //!
 //! A peer is servable only when zebra-network has recently handshaked it (which
 //! proves it passed the protocol-version floor), it advertises the full-node
-//! `NODE_NETWORK` service, and its address is routable on the network's default
-//! port. The handshake enforces the version floor but not `NODE_NETWORK`, so the
-//! service is checked here.
+//! `NODE_NETWORK` service, its address is routable on the network's default
+//! port, it was not recorded from an inbound connection, and it has no
+//! misbehavior score. The handshake enforces the version floor but not
+//! `NODE_NETWORK`, so the service is checked here.
 
 use std::net::IpAddr;
 
@@ -24,15 +25,21 @@ pub(crate) enum UnservableReason {
     NotRecentlyLive,
     /// Does not advertise the full-node (`NODE_NETWORK`) service.
     NotFullNode,
+    /// Recorded from an inbound peer connection.
+    Inbound,
+    /// Has a non-zero zebra-network misbehavior score.
+    Misbehaving,
 }
 
 impl UnservableReason {
     /// Every reason, so callers can reset each per-reason gauge on a refresh.
-    pub(crate) const ALL: [Self; 4] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::NotRoutable,
         Self::WrongPort,
         Self::NotRecentlyLive,
         Self::NotFullNode,
+        Self::Inbound,
+        Self::Misbehaving,
     ];
 
     /// Stable `snake_case` label used as a metric value.
@@ -42,31 +49,44 @@ impl UnservableReason {
             Self::WrongPort => "wrong_port",
             Self::NotRecentlyLive => "not_recently_live",
             Self::NotFullNode => "not_full_node",
+            Self::Inbound => "inbound",
+            Self::Misbehaving => "misbehaving",
         }
     }
 }
 
-/// Decide servability from a peer's attributes.
-///
-/// Order matters: it fixes which reason is reported when several checks fail.
-fn classify(
+#[derive(Clone, Copy)]
+struct PeerAttributes {
     ip: IpAddr,
     port: u16,
     default_port: u16,
     is_recently_live: bool,
     advertises_node_network: bool,
-) -> Result<(), UnservableReason> {
-    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+    is_inbound: bool,
+    misbehavior_score: u32,
+}
+
+/// Decide servability from a peer's attributes.
+///
+/// Order matters: it fixes which reason is reported when several checks fail.
+fn classify(peer: PeerAttributes) -> Result<(), UnservableReason> {
+    if peer.ip.is_loopback() || peer.ip.is_unspecified() || peer.ip.is_multicast() {
         return Err(UnservableReason::NotRoutable);
     }
-    if port != default_port {
+    if peer.port != peer.default_port {
         return Err(UnservableReason::WrongPort);
     }
-    if !is_recently_live {
+    if !peer.is_recently_live {
         return Err(UnservableReason::NotRecentlyLive);
     }
-    if !advertises_node_network {
+    if !peer.advertises_node_network {
         return Err(UnservableReason::NotFullNode);
+    }
+    if peer.is_inbound {
+        return Err(UnservableReason::Inbound);
+    }
+    if peer.misbehavior_score != 0 {
+        return Err(UnservableReason::Misbehaving);
     }
     Ok(())
 }
@@ -78,13 +98,15 @@ pub(crate) fn classify_peer(
     network: &Network,
 ) -> Result<(), UnservableReason> {
     let addr = meta.addr();
-    classify(
-        addr.ip(),
-        addr.port(),
-        network.default_port(),
-        meta.was_recently_live(now),
-        meta.last_known_info_is_valid_for_outbound(network),
-    )
+    classify(PeerAttributes {
+        ip: addr.ip(),
+        port: addr.port(),
+        default_port: network.default_port(),
+        is_recently_live: meta.was_recently_live(now),
+        advertises_node_network: meta.last_known_info_is_valid_for_outbound(network),
+        is_inbound: meta.is_inbound(),
+        misbehavior_score: meta.misbehavior(),
+    })
 }
 
 #[cfg(test)]
@@ -100,12 +122,21 @@ mod tests {
         IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))
     }
 
+    fn servable_peer() -> PeerAttributes {
+        PeerAttributes {
+            ip: routable_ip(),
+            port: DEFAULT_PORT,
+            default_port: DEFAULT_PORT,
+            is_recently_live: true,
+            advertises_node_network: true,
+            is_inbound: false,
+            misbehavior_score: 0,
+        }
+    }
+
     #[test]
     fn servable_when_every_condition_is_met() {
-        assert_eq!(
-            classify(routable_ip(), DEFAULT_PORT, DEFAULT_PORT, true, true),
-            Ok(())
-        );
+        assert_eq!(classify(servable_peer()), Ok(()));
     }
 
     #[test]
@@ -119,8 +150,11 @@ mod tests {
             IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1)),
         ];
         for ip in cases {
+            let mut peer = servable_peer();
+            peer.ip = ip;
+
             assert_eq!(
-                classify(ip, DEFAULT_PORT, DEFAULT_PORT, true, true),
+                classify(peer),
                 Err(UnservableReason::NotRoutable),
                 "{ip} should be NotRoutable"
             );
@@ -129,40 +163,55 @@ mod tests {
 
     #[test]
     fn non_default_port_is_rejected() {
-        assert_eq!(
-            classify(routable_ip(), 1234, DEFAULT_PORT, true, true),
-            Err(UnservableReason::WrongPort)
-        );
+        let mut peer = servable_peer();
+        peer.port = 1234;
+
+        assert_eq!(classify(peer), Err(UnservableReason::WrongPort));
     }
 
     #[test]
     fn peer_without_recent_handshake_is_rejected() {
-        assert_eq!(
-            classify(routable_ip(), DEFAULT_PORT, DEFAULT_PORT, false, true),
-            Err(UnservableReason::NotRecentlyLive)
-        );
+        let mut peer = servable_peer();
+        peer.is_recently_live = false;
+
+        assert_eq!(classify(peer), Err(UnservableReason::NotRecentlyLive));
     }
 
     #[test]
     fn recently_live_non_full_node_is_rejected() {
-        assert_eq!(
-            classify(routable_ip(), DEFAULT_PORT, DEFAULT_PORT, true, false),
-            Err(UnservableReason::NotFullNode)
-        );
+        let mut peer = servable_peer();
+        peer.advertises_node_network = false;
+
+        assert_eq!(classify(peer), Err(UnservableReason::NotFullNode));
+    }
+
+    #[test]
+    fn inbound_peer_is_rejected() {
+        let mut peer = servable_peer();
+        peer.is_inbound = true;
+
+        assert_eq!(classify(peer), Err(UnservableReason::Inbound));
+    }
+
+    #[test]
+    fn misbehaving_peer_is_rejected() {
+        let mut peer = servable_peer();
+        peer.misbehavior_score = 1;
+
+        assert_eq!(classify(peer), Err(UnservableReason::Misbehaving));
     }
 
     #[test]
     fn structural_reasons_take_precedence_over_liveness() {
-        assert_eq!(
-            classify(
-                IpAddr::V4(Ipv4Addr::LOCALHOST),
-                1234,
-                DEFAULT_PORT,
-                false,
-                false
-            ),
-            Err(UnservableReason::NotRoutable)
-        );
+        let mut peer = servable_peer();
+        peer.ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        peer.port = 1234;
+        peer.is_recently_live = false;
+        peer.advertises_node_network = false;
+        peer.is_inbound = true;
+        peer.misbehavior_score = 1;
+
+        assert_eq!(classify(peer), Err(UnservableReason::NotRoutable));
     }
 
     #[test]
@@ -170,6 +219,6 @@ mod tests {
         let labels: Vec<&str> = UnservableReason::ALL.iter().map(|r| r.label()).collect();
         let unique: HashSet<&str> = labels.iter().copied().collect();
         assert_eq!(labels.len(), unique.len(), "reason labels must be unique");
-        assert_eq!(unique.len(), 4, "all reasons must have a label");
+        assert_eq!(unique.len(), 6, "all reasons must have a label");
     }
 }
