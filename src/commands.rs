@@ -2,15 +2,17 @@
 
 use crate::config::SeederConfig;
 use clap::{Parser, Subcommand};
-use color_eyre::eyre::{Context, Result};
-use std::path::PathBuf;
-use std::{io::Write, sync::OnceLock};
+use color_eyre::eyre::{Context, Result, bail};
+use std::{io::Write, path::PathBuf};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
+const DEFAULT_LOG_FILTER: &str = "info";
+const RUST_LOG_ENV: &str = "RUST_LOG";
+
 /// Command-line arguments for the seeder.
 #[derive(Parser, Debug)]
-#[command(author, version = build_version(), about = "Zcash DNS Seeder", long_about = None)]
+#[command(author, version = crate::build_info::cli_version(), about = "Zcash DNS Seeder", long_about = None)]
 pub(crate) struct SeederApp {
     /// Path to a TOML configuration file.
     #[arg(short, long, global = true)]
@@ -30,18 +32,15 @@ pub(crate) enum Commands {
     PrintConfig,
 }
 
-fn build_version() -> &'static str {
-    static BUILD_VERSION: OnceLock<String> = OnceLock::new();
-
-    BUILD_VERSION.get_or_init(|| {
-        option_env!("VERGEN_GIT_SHA").map_or_else(
-            || env!("CARGO_PKG_VERSION").to_string(),
-            |sha| {
-                let short_sha = &sha[..7.min(sha.len())];
-                format!("{} ({short_sha})", env!("CARGO_PKG_VERSION"))
-            },
-        )
-    })
+fn log_filter_from_env() -> Result<EnvFilter> {
+    match std::env::var(RUST_LOG_ENV) {
+        Ok(filter) => EnvFilter::try_new(&filter)
+            .wrap_err_with(|| format!("failed to parse {RUST_LOG_ENV}={filter:?}")),
+        Err(std::env::VarError::NotPresent) => Ok(EnvFilter::new(DEFAULT_LOG_FILTER)),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("{RUST_LOG_ENV} must be valid UTF-8");
+        }
+    }
 }
 
 impl SeederApp {
@@ -52,7 +51,7 @@ impl SeederApp {
         // defaulting to `info`. Logs go to stderr so stdout stays clean for
         // piping `print-config` output.
         tracing_subscriber::registry()
-            .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+            .with(log_filter_from_env()?)
             .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
             .init();
 
@@ -129,6 +128,20 @@ mod tests {
                 "version should include short git sha"
             );
         }
+    }
+
+    #[test]
+    fn log_filter_defaults_when_rust_log_is_missing() -> TestResult {
+        temp_env::with_var(RUST_LOG_ENV, None::<&str>, log_filter_from_env)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn log_filter_rejects_invalid_rust_log() {
+        let filter = temp_env::with_var(RUST_LOG_ENV, Some("["), log_filter_from_env);
+
+        assert!(filter.is_err(), "invalid RUST_LOG should fail");
     }
 
     #[test]

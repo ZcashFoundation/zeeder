@@ -9,6 +9,7 @@ use tokio::net::{TcpListener, UdpSocket};
 use zebra_chain::chain_tip::ChainTip;
 
 use crate::{
+    build_info,
     config::SeederConfig,
     crawl::{address_cache, chain_tip},
     dns::{
@@ -39,13 +40,7 @@ pub(crate) async fn run(config: SeederConfig) -> Result<()> {
         )
     });
 
-    let user_agent = option_env!("VERGEN_GIT_SHA").map_or_else(
-        || format!("zebra-seeder/{}", env!("CARGO_PKG_VERSION")),
-        |sha| {
-            let short_sha = &sha[..7.min(sha.len())];
-            format!("zebra-seeder/{} ({short_sha})", env!("CARGO_PKG_VERSION"))
-        },
-    );
+    let user_agent = build_info::user_agent();
 
     tracing::info!("User-Agent: {user_agent}");
 
@@ -62,8 +57,8 @@ pub(crate) async fn run(config: SeederConfig) -> Result<()> {
     gauge!(MIN_PROTOCOL_VERSION).set(f64::from(min_protocol_version.0));
     gauge!(
         BUILD_INFO,
-        LABEL_VERSION => env!("CARGO_PKG_VERSION"),
-        LABEL_GIT_SHA => option_env!("VERGEN_GIT_SHA").unwrap_or("unknown"),
+        LABEL_VERSION => build_info::VERSION,
+        LABEL_GIT_SHA => build_info::git_sha_label(),
         LABEL_NETWORK => network.to_string(),
     )
     .set(1.0);
@@ -73,7 +68,11 @@ pub(crate) async fn run(config: SeederConfig) -> Result<()> {
     // Keep the peer set in scope so zebra-network keeps crawling for the
     // lifetime of the seeder.
 
-    let rate_limiter = config.rate_limit.as_ref().map(RateLimiter::new);
+    let rate_limiter = config
+        .rate_limit
+        .as_ref()
+        .map(RateLimiter::new)
+        .transpose()?;
 
     tracing::info!("Initializing DNS server on {}", config.dns.listen_addr);
 

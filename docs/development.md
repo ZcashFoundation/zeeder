@@ -290,17 +290,18 @@ docs: update deployment guide
 
 ### Adding New Configuration Parameter
 
-1. Add field to `SeederConfig` in `src/config.rs`:
+1. Add the field to the config struct that owns the setting in `src/config.rs`
+   (`DnsConfig`, `CrawlerConfig`, `MetricsConfig`, or `RateLimitConfig`):
 ```rust
-pub struct SeederConfig {
+pub(crate) struct DnsConfig {
     // ...
-    pub my_param: String,
+    pub(crate) my_param: String,
 }
 ```
 
 2. Update `Default` impl:
 ```rust
-impl Default for SeederConfig {
+impl Default for DnsConfig {
     fn default() -> Self {
         Self {
             // ...
@@ -310,16 +311,19 @@ impl Default for SeederConfig {
 }
 ```
 
-3. Add test in the module that owns the config code (`src/config.rs`):
+3. Add validation in the owning config type when invalid values are possible, and
+   call it from `SeederConfig::validate()`.
+
+4. Add tests in the module that owns the config code (`src/config.rs`):
 ```rust
 #[test]
 fn test_my_param_default() {
-    let config = SeederConfig::default();
+    let config = DnsConfig::default();
     assert_eq!(config.my_param, "default_value");
 }
 ```
 
-4. Document in `docs/operations.md` configuration table
+5. Document the setting in `docs/operations.md` configuration table.
 
 ### Adding New Metric
 

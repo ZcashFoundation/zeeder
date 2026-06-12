@@ -251,7 +251,8 @@ Servable peers are then separated by address family (IPv4/IPv6), shuffled, and c
 **Implementation:**
 - `config` crate for loading
 - `serde` for deserialization
-- `.env` file support via `dotenvy`
+- Optional `.env` loading via `dotenvy`; a present malformed `.env` fails startup
+- Validation runs on the resolved config before `print-config` or DNS startup proceeds
 
 ---
 

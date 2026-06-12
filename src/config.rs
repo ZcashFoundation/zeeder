@@ -1,10 +1,14 @@
 //! Layered configuration for the seeder: defaults, then an optional TOML file,
 //! then `ZEBRA_SEEDER__*` environment variables (each layer overriding the last).
 
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Context, Result, eyre};
 use config::{Config, Environment, File};
+use hickory_proto::rr::Name;
 use serde::{Deserialize, Serialize};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    num::NonZeroU32,
+};
 use zebra_chain::parameters::Network;
 
 /// Configuration for the Zebra seeder.
@@ -100,6 +104,15 @@ impl Default for DnsConfig {
     }
 }
 
+impl DnsConfig {
+    fn validate(&self) -> Result<()> {
+        Name::from_ascii(&self.domain)
+            .wrap_err_with(|| format!("dns.domain must be a valid DNS name: {:?}", self.domain))?;
+
+        Ok(())
+    }
+}
+
 /// Configuration for Prometheus metrics.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -138,6 +151,26 @@ impl Default for RateLimitConfig {
     }
 }
 
+impl RateLimitConfig {
+    pub(crate) fn nonzero_queries_per_second(&self) -> Result<NonZeroU32> {
+        nonzero_config_value("rate_limit.queries_per_second", self.queries_per_second)
+    }
+
+    pub(crate) fn nonzero_burst_size(&self) -> Result<NonZeroU32> {
+        nonzero_config_value("rate_limit.burst_size", self.burst_size)
+    }
+
+    fn validate(&self) -> Result<()> {
+        self.nonzero_queries_per_second()?;
+        self.nonzero_burst_size()?;
+        Ok(())
+    }
+}
+
+fn nonzero_config_value(field: &str, configured_value: u32) -> Result<NonZeroU32> {
+    NonZeroU32::new(configured_value).ok_or_else(|| eyre!("{field} must be greater than 0"))
+}
+
 impl Default for SeederConfig {
     fn default() -> Self {
         Self {
@@ -171,8 +204,19 @@ impl SeederConfig {
         );
 
         let seeder_config: Self = builder.build()?.try_deserialize()?;
+        seeder_config.validate()?;
 
         Ok(seeder_config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        self.dns.validate()?;
+
+        if let Some(rate_limit) = &self.rate_limit {
+            rate_limit.validate()?;
+        }
+
+        Ok(())
     }
 }
 
@@ -262,6 +306,15 @@ mod tests {
     }
 
     #[test]
+    fn invalid_dns_domain_is_rejected() {
+        let config = temp_env::with_var("ZEBRA_SEEDER__DNS__DOMAIN", Some("not a domain"), || {
+            SeederConfig::load_with_env(None)
+        });
+
+        assert!(config.is_err(), "invalid DNS domain should fail");
+    }
+
+    #[test]
     fn unknown_metrics_env_key_is_rejected() {
         let config = temp_env::with_var(
             "ZEBRA_SEEDER__METRICS__ENDPOINT_ADRR",
@@ -280,6 +333,26 @@ mod tests {
             });
 
         assert!(config.is_err(), "unknown rate-limit config key should fail");
+    }
+
+    #[test]
+    fn zero_rate_limit_is_rejected() {
+        let config = temp_env::with_var(
+            "ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND",
+            Some("0"),
+            || SeederConfig::load_with_env(None),
+        );
+
+        assert!(config.is_err(), "zero query rate should fail");
+    }
+
+    #[test]
+    fn zero_rate_limit_burst_is_rejected() {
+        let config = temp_env::with_var("ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE", Some("0"), || {
+            SeederConfig::load_with_env(None)
+        });
+
+        assert!(config.is_err(), "zero burst size should fail");
     }
 
     #[test]

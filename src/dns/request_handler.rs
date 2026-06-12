@@ -663,7 +663,7 @@ mod tests {
         let rate_limiter = RateLimiter::new(&RateLimitConfig {
             queries_per_second: 1,
             burst_size: 2,
-        });
+        })?;
         let request_handler = request_handler(
             ServablePeers::default(),
             "mainnet.seeder.test",

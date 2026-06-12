@@ -41,6 +41,9 @@ cp .env.example .env
 # Edit .env with your values
 ```
 
+The `.env` file is optional. If it exists, it must parse successfully or the
+seeder exits before loading configuration.
+
 ### TOML Config File
 
 Example `config.toml`:
@@ -72,8 +75,8 @@ Use with: `zebra-seeder start --config config.toml`
 | `dns.ttl` | `ZEBRA_SEEDER__DNS__TTL` | `600` | DNS response TTL in seconds |
 | `dns.domain` | `ZEBRA_SEEDER__DNS__DOMAIN` | `mainnet.seeder.example.com` | Authoritative domain |
 | `crawler.network` | `ZEBRA_SEEDER__CRAWLER__NETWORK` | `Mainnet` | Zcash network (`Mainnet` or `Testnet`) |
-| `rate_limit.queries_per_second` | `ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP |
-| `rate_limit.burst_size` | `ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity |
+| `rate_limit.queries_per_second` | `ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP; must be greater than 0 |
+| `rate_limit.burst_size` | `ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity; must be greater than 0 |
 | `metrics.endpoint_addr` | `ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR` | (disabled) | Prometheus endpoint |
 
 ## Deployment

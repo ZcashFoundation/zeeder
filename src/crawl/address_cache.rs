@@ -63,7 +63,10 @@ pub(crate) fn spawn(
                 servable_peers(&guard, &network, should_log_status)
             };
 
-            let _ = servable_peers_sender.send(servable_peers);
+            if servable_peers_sender.send(servable_peers).is_err() {
+                tracing::debug!("servable peer cache receiver dropped, stopping cache updater");
+                break;
+            }
         }
     });
 
