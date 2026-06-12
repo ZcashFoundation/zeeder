@@ -7,13 +7,13 @@ A Rust-based DNS seeder for the Zcash network, mirroring patterns from the [Zebr
 
 ## Status
 
-**Current State**: Beta. Ready for production testing.
+**Current State**: Pre-release. Internal refactor and validation in progress.
 
 ## Quickstart
 
 ```bash
 cp .env.example .env
-cargo run start
+cargo run -- start
 ```
 
 Verify DNS responses in another terminal:

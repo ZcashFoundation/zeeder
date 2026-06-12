@@ -25,7 +25,8 @@ use crate::{
     dns::rate_limiter::RateLimiter,
     metrics::{
         DNS_ERRORS_TOTAL, DNS_QUERIES_TOTAL, DNS_RATE_LIMITED_TOTAL, DNS_RESPONSE_PEERS,
-        LABEL_RECORD_TYPE, RECORD_TYPE_A, RECORD_TYPE_AAAA, RECORD_TYPE_NS, RECORD_TYPE_SOA,
+        LABEL_RECORD_TYPE, RECORD_TYPE_A, RECORD_TYPE_AAAA, RECORD_TYPE_NS, RECORD_TYPE_OTHER,
+        RECORD_TYPE_SOA,
     },
 };
 
@@ -88,8 +89,8 @@ impl SeedZone {
             reason = "RecordType has many variants; the seeder serves only A and AAAA"
         )]
         match record_type {
-            RecordType::A => resolve_peer_answer(RECORD_TYPE_A, &servable_peers.ipv4),
-            RecordType::AAAA => resolve_peer_answer(RECORD_TYPE_AAAA, &servable_peers.ipv6),
+            RecordType::A => resolve_peer_answer(&servable_peers.ipv4),
+            RecordType::AAAA => resolve_peer_answer(&servable_peers.ipv6),
             RecordType::NS => DnsAnswer::Nameserver,
             RecordType::SOA => DnsAnswer::StartOfAuthority,
             _ => DnsAnswer::NoData,
@@ -146,23 +147,28 @@ enum DnsAnswer<'a> {
     NoData,
     Nameserver,
     StartOfAuthority,
-    PeerAddresses {
-        record_type_label: &'static str,
-        peers: &'a [PeerSocketAddr],
-    },
+    PeerAddresses { peers: &'a [PeerSocketAddr] },
 }
 
-fn resolve_peer_answer<'a>(
-    record_type_label: &'static str,
-    peers: &'a [PeerSocketAddr],
-) -> DnsAnswer<'a> {
+fn record_type_label(record_type: RecordType) -> &'static str {
+    #[allow(
+        clippy::wildcard_enum_match_arm,
+        reason = "unsupported DNS record types share the stable 'other' metrics label"
+    )]
+    match record_type {
+        RecordType::A => RECORD_TYPE_A,
+        RecordType::AAAA => RECORD_TYPE_AAAA,
+        RecordType::NS => RECORD_TYPE_NS,
+        RecordType::SOA => RECORD_TYPE_SOA,
+        _ => RECORD_TYPE_OTHER,
+    }
+}
+
+fn resolve_peer_answer(peers: &[PeerSocketAddr]) -> DnsAnswer<'_> {
     if peers.is_empty() {
         DnsAnswer::NoData
     } else {
-        DnsAnswer::PeerAddresses {
-            record_type_label,
-            peers,
-        }
+        DnsAnswer::PeerAddresses { peers }
     }
 }
 
@@ -218,6 +224,11 @@ impl DnsRequestHandler {
         let response_records = if let Some(query) = request.queries.queries().first() {
             let name = query.name();
             let record_type = query.query_type();
+            counter!(
+                DNS_QUERIES_TOTAL,
+                &[(LABEL_RECORD_TYPE, record_type_label(record_type))]
+            )
+            .increment(1);
 
             {
                 let servable_peers = self.servable_peers.borrow().clone();
@@ -267,30 +278,20 @@ impl DnsRequestHandler {
                 answer_records: Vec::new(),
                 soa_records: vec![self.seed_zone.records.soa.clone()],
             },
-            DnsAnswer::Nameserver => {
-                counter!(DNS_QUERIES_TOTAL, &[(LABEL_RECORD_TYPE, RECORD_TYPE_NS)]).increment(1);
-                DnsResponseRecords {
-                    answer_records: vec![self.seed_zone.records.nameserver.clone()],
-                    soa_records: Vec::new(),
-                }
-            }
-            DnsAnswer::StartOfAuthority => {
-                counter!(DNS_QUERIES_TOTAL, &[(LABEL_RECORD_TYPE, RECORD_TYPE_SOA)]).increment(1);
-                DnsResponseRecords {
-                    answer_records: vec![self.seed_zone.records.soa.clone()],
-                    soa_records: Vec::new(),
-                }
-            }
-            DnsAnswer::PeerAddresses {
-                record_type_label,
-                peers,
-            } => {
+            DnsAnswer::Nameserver => DnsResponseRecords {
+                answer_records: vec![self.seed_zone.records.nameserver.clone()],
+                soa_records: Vec::new(),
+            },
+            DnsAnswer::StartOfAuthority => DnsResponseRecords {
+                answer_records: vec![self.seed_zone.records.soa.clone()],
+                soa_records: Vec::new(),
+            },
+            DnsAnswer::PeerAddresses { peers } => {
                 #[allow(
                     clippy::cast_precision_loss,
                     reason = "histogram sample of a small peer count"
                 )]
                 histogram!(DNS_RESPONSE_PEERS).record(peers.len() as f64);
-                counter!(DNS_QUERIES_TOTAL, &[(LABEL_RECORD_TYPE, record_type_label)]).increment(1);
 
                 let answer_records = peers
                     .iter()
@@ -477,7 +478,6 @@ mod tests {
         assert_eq!(
             answer,
             DnsAnswer::PeerAddresses {
-                record_type_label: RECORD_TYPE_A,
                 peers: servable_peers.ipv4.as_ref(),
             }
         );
@@ -511,7 +511,6 @@ mod tests {
         assert_eq!(
             answer,
             DnsAnswer::PeerAddresses {
-                record_type_label: RECORD_TYPE_A,
                 peers: servable_peers.ipv4.as_ref(),
             }
         );
@@ -531,7 +530,6 @@ mod tests {
         assert_eq!(
             answer,
             DnsAnswer::PeerAddresses {
-                record_type_label: RECORD_TYPE_A,
                 peers: servable_peers.ipv4.as_ref(),
             }
         );
@@ -620,11 +618,19 @@ mod tests {
         assert_eq!(
             answer,
             DnsAnswer::PeerAddresses {
-                record_type_label: RECORD_TYPE_AAAA,
                 peers: servable_peers.ipv6.as_ref(),
             }
         );
         Ok(())
+    }
+
+    #[test]
+    fn unsupported_record_types_use_other_metric_label() {
+        assert_eq!(record_type_label(RecordType::A), RECORD_TYPE_A);
+        assert_eq!(record_type_label(RecordType::AAAA), RECORD_TYPE_AAAA);
+        assert_eq!(record_type_label(RecordType::SOA), RECORD_TYPE_SOA);
+        assert_eq!(record_type_label(RecordType::NS), RECORD_TYPE_NS);
+        assert_eq!(record_type_label(RecordType::TXT), RECORD_TYPE_OTHER);
     }
 
     #[test]

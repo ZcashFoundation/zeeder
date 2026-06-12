@@ -29,6 +29,7 @@ pub(crate) const RECORD_TYPE_A: &str = "A";
 pub(crate) const RECORD_TYPE_AAAA: &str = "AAAA";
 pub(crate) const RECORD_TYPE_SOA: &str = "SOA";
 pub(crate) const RECORD_TYPE_NS: &str = "NS";
+pub(crate) const RECORD_TYPE_OTHER: &str = "other";
 
 /// Install the Prometheus recorder and serve metrics at `addr`.
 pub(crate) fn init(addr: SocketAddr) -> Result<()> {
@@ -75,6 +76,7 @@ mod tests {
             RECORD_TYPE_AAAA,
             RECORD_TYPE_SOA,
             RECORD_TYPE_NS,
+            RECORD_TYPE_OTHER,
         ];
 
         for term in documented_terms {
@@ -83,5 +85,63 @@ mod tests {
                 "`{term}` should be documented in docs/operations.md"
             );
         }
+    }
+
+    #[test]
+    fn operations_docs_describe_peer_response_metric_as_prometheus_summary() {
+        let operations_docs = include_str!("../docs/operations.md");
+        let response_peers_metric_row =
+            format!("| `{DNS_RESPONSE_PEERS}` | Summary | - | Peers per response | - |");
+
+        assert!(
+            operations_docs.contains(&response_peers_metric_row),
+            "`{DNS_RESPONSE_PEERS}` should be documented with its exported Prometheus type"
+        );
+    }
+
+    #[test]
+    fn operations_docs_use_servability_vocabulary_for_peer_metrics() {
+        let operations_docs = include_str!("../docs/operations.md");
+        let unservable_metric_row = format!(
+            "| `{PEERS_UNSERVABLE}` | Gauge | `reason=not_routable\\|wrong_port\\|not_recently_live\\|not_full_node\\|inbound\\|misbehaving` | Unservable peers, by reason | - |"
+        );
+
+        assert!(
+            operations_docs.contains(&unservable_metric_row),
+            "`{PEERS_UNSERVABLE}` should use the canonical unservable vocabulary"
+        );
+    }
+
+    #[test]
+    fn operations_docs_troubleshooting_uses_canonical_metric_names() {
+        let operations_docs = include_str!("../docs/operations.md");
+
+        for metric_name in [PEERS_SERVABLE, PEERS_KNOWN] {
+            let troubleshooting_command =
+                format!("curl -s http://localhost:9999/metrics | grep '{metric_name}'");
+
+            assert!(
+                operations_docs.contains(&troubleshooting_command),
+                "`{metric_name}` troubleshooting command should use the full metric name"
+            );
+        }
+    }
+
+    #[test]
+    fn operations_docs_describe_liveness_and_readiness_probes() {
+        let operations_docs = include_str!("../docs/operations.md");
+
+        assert!(
+            operations_docs.contains("dig @127.0.0.1 -p 1053 testnet.seeder.example.com SOA"),
+            "DNS liveness probe should be documented"
+        );
+        assert!(
+            operations_docs.contains(PEERS_SERVABLE),
+            "`{PEERS_SERVABLE}` readiness metric should be documented"
+        );
+        assert!(
+            operations_docs.contains("non-zero servable-peer gauge"),
+            "readiness semantics should be documented"
+        );
     }
 }

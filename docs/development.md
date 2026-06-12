@@ -30,7 +30,7 @@ cp .env.example .env
 # ZEBRA_SEEDER__DNS__DOMAIN="testnet.seeder.example.com"
 
 # Run
-cargo run start
+cargo run -- start
 
 # Test in another terminal
 dig @127.0.0.1 -p 1053 testnet.seeder.example.com A
@@ -94,6 +94,10 @@ zebra-seeder/
 - CLI structure with clap
 - Config loading orchestration
 - Metrics initialization and command dispatch
+
+### Runtime Naming Convention
+
+Use `run` for functions that take over the caller until shutdown or command completion. Use `spawn` only for functions that detach a background task and return the caller's interaction surface, such as a receiver or handle.
 
 ## Testing
 
@@ -343,29 +347,28 @@ counter!(MY_METRIC_TOTAL).increment(1);
 
 **Enable debug logging:**
 ```bash
-RUST_LOG=debug cargo run start
+RUST_LOG=debug cargo run -- start
 ```
 
 **Trace-level (very verbose):**
 ```bash
-RUST_LOG=zebra_seeder=trace cargo run start
+RUST_LOG=zebra_seeder=trace cargo run -- start
 ```
 
 **Filter by module:**
 ```bash
-RUST_LOG=zebra_seeder::dns::request_handler=debug cargo run start
+RUST_LOG=zebra_seeder::dns::request_handler=debug cargo run -- start
 ```
 
 ## Release Process
 
 1. **Update version** in `Cargo.toml`
-2. **Update CHANGELOG.md** with changes
-3. **Run checks**: `./commit_checks.sh`
-4. **Commit**: `git commit -m "chore: release v1.2.3"`
-5. **Tag**: `git tag -a v1.2.3 -m "Release v1.2.3"`
-6. **Push**: `git push && git push --tags`
-7. **Build release**: `cargo build --release`
-8. **Create GitHub release** with binaries
+2. **Run checks**: `./commit_checks.sh`
+3. **Commit**: `git commit -m "chore: release v1.2.3"`
+4. **Tag**: `git tag -a v1.2.3 -m "Release v1.2.3"`
+5. **Push**: `git push && git push --tags`
+6. **Build release**: `cargo build --release`
+7. **Create GitHub release** with binaries
 
 ## Useful Resources
 

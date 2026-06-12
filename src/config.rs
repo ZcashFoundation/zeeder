@@ -225,7 +225,7 @@ mod tests {
     use super::*;
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -255,6 +255,94 @@ mod tests {
         );
         assert!(config.crawler.network_config().external_addr.is_none());
         assert_eq!(config.crawler.network_config().max_connections_per_ip, 1);
+    }
+
+    #[test]
+    fn operations_docs_include_crawler_listener_firewall_ports() {
+        let operations_docs = include_str!("../docs/operations.md");
+
+        for port in [
+            Network::Mainnet.default_port(),
+            Network::new_default_testnet().default_port(),
+        ] {
+            let firewall_command = format!("ufw allow {port}/tcp");
+            assert!(
+                operations_docs.contains(&firewall_command),
+                "`{firewall_command}` should be documented in the firewall checklist"
+            );
+        }
+    }
+
+    #[test]
+    fn operations_docs_include_config_reference_rows() {
+        let operations_docs = include_str!("../docs/operations.md");
+        let expected_rows = [
+            "| `dns.listen_addr` | `ZEBRA_SEEDER__DNS__LISTEN_ADDR` | `0.0.0.0:53` | DNS server address and port |",
+            "| `dns.ttl` | `ZEBRA_SEEDER__DNS__TTL` | `600` | DNS response TTL in seconds |",
+            "| `dns.domain` | `ZEBRA_SEEDER__DNS__DOMAIN` | `mainnet.seeder.example.com` | Authoritative domain |",
+            "| `crawler.network` | `ZEBRA_SEEDER__CRAWLER__NETWORK` | `Mainnet` | Zcash network (`Mainnet` or `Testnet`) |",
+            "| `rate_limit.queries_per_second` | `ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP; must be greater than 0 |",
+            "| `rate_limit.burst_size` | `ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity; must be greater than 0 |",
+            "| `metrics.endpoint_addr` | `ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR` | (disabled) | Prometheus endpoint |",
+        ];
+
+        for row in expected_rows {
+            assert!(
+                operations_docs.contains(row),
+                "docs/operations.md should document `{row}`"
+            );
+        }
+    }
+
+    #[test]
+    fn env_example_loads_with_supported_config_keys() -> TestResult {
+        let env_example_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(".env.example");
+        let mut env_example_vars = Vec::new();
+
+        for item in dotenvy::from_path_iter(&env_example_path)? {
+            let (key, value) = item?;
+            env_example_vars.push((key, Some(value)));
+        }
+
+        let expected_keys = [
+            "ZEBRA_SEEDER__CRAWLER__NETWORK",
+            "ZEBRA_SEEDER__DNS__LISTEN_ADDR",
+            "ZEBRA_SEEDER__DNS__TTL",
+            "ZEBRA_SEEDER__DNS__DOMAIN",
+            "ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR",
+            "ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND",
+            "ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE",
+        ];
+        let actual_keys: Vec<&str> = env_example_vars
+            .iter()
+            .map(|(key, _value)| key.as_str())
+            .collect();
+        assert_eq!(actual_keys.as_slice(), expected_keys.as_slice());
+
+        let scoped_env: Vec<(&str, Option<&str>)> = env_example_vars
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_deref()))
+            .collect();
+        let config = temp_env::with_vars(&scoped_env, || SeederConfig::load_with_env(None))?;
+
+        assert_eq!(config.crawler.network, CrawlerNetwork::Testnet);
+        assert_eq!(config.dns.listen_addr.to_string(), "0.0.0.0:1053");
+        assert_eq!(config.dns.ttl, 600);
+        assert_eq!(config.dns.domain, "testnet.seeder.example.com");
+        assert_eq!(
+            config
+                .metrics
+                .map(|metrics| metrics.endpoint_addr.to_string()),
+            Some("0.0.0.0:9999".to_string())
+        );
+        assert_eq!(
+            config
+                .rate_limit
+                .map(|rate_limit| (rate_limit.queries_per_second, rate_limit.burst_size)),
+            Some((10, 20))
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -292,6 +380,9 @@ ttl = 300
 [rate_limit]
 queries_per_second = 50
 burst_size = 100
+
+[metrics]
+endpoint_addr = "127.0.0.1:9999"
 "#,
         )?;
 
@@ -323,6 +414,12 @@ burst_size = 100
                 .rate_limit
                 .map(|rate_limit| (rate_limit.queries_per_second, rate_limit.burst_size)),
             Some((50, 100))
+        );
+        assert_eq!(
+            config
+                .metrics
+                .map(|metrics| metrics.endpoint_addr.to_string()),
+            Some("127.0.0.1:9999".to_string())
         );
         Ok(())
     }
@@ -386,6 +483,23 @@ burst_size = 100
         );
 
         assert!(config.is_err(), "unknown metrics config key should fail");
+    }
+
+    #[test]
+    fn metrics_endpoint_env_enables_metrics() -> TestResult {
+        let config = temp_env::with_var(
+            "ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR",
+            Some("127.0.0.1:9999"),
+            || SeederConfig::load_with_env(None),
+        )?;
+
+        assert_eq!(
+            config
+                .metrics
+                .map(|metrics| metrics.endpoint_addr.to_string()),
+            Some("127.0.0.1:9999".to_string())
+        );
+        Ok(())
     }
 
     #[test]

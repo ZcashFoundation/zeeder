@@ -201,6 +201,10 @@ ufw allow 53/tcp
 # Allow metrics (from monitoring network only)
 ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
 
+# Optional: allow inbound P2P crawler connections (choose one network)
+ufw allow 8233/tcp   # mainnet
+ufw allow 18233/tcp  # testnet
+
 # Allow outbound to Zcash network
 # (Usually no action needed for outbound)
 ```
@@ -220,20 +224,39 @@ ufw allow from 10.0.0.0/8 to any port 9999 proto tcp
 
 **Metrics endpoint:** `http://localhost:9999/metrics` (if enabled)
 
+### Health Checks
+
+**Liveness:** the DNS server is live when it returns an authoritative response
+for the configured seed domain:
+
+```bash
+dig @127.0.0.1 -p 1053 testnet.seeder.example.com SOA
+```
+
+**Readiness:** the crawler is ready to serve bootstrap peers when at least one
+address family has a non-zero servable-peer gauge:
+
+```bash
+curl -s http://localhost:9999/metrics | grep 'zebra_seeder_peers_servable'
+```
+
+A zero gauge means DNS can still answer zone metadata and NODATA responses, but
+bootstrap A/AAAA answers will be empty for that address family.
+
 **Critical Metrics to Monitor:**
 
 | Metric | Type | Labels | Description | Alert If |
 |--------|------|--------|-------------|----------|
 | `zebra_seeder_peers_servable` | Gauge | `addr_family=v4\|v6` | Servable peers (recently-live, current-version, outbound, clean) | < 10 |
-| `zebra_seeder_peers_unservable` | Gauge | `reason=not_routable\|wrong_port\|not_recently_live\|not_full_node\|inbound\|misbehaving` | Excluded peers, by reason | - |
+| `zebra_seeder_peers_unservable` | Gauge | `reason=not_routable\|wrong_port\|not_recently_live\|not_full_node\|inbound\|misbehaving` | Unservable peers, by reason | - |
 | `zebra_seeder_peers_known` | Gauge | - | Total peers in the address book | - |
 | `zebra_seeder_min_protocol_version` | Gauge | - | Enforced protocol-version floor | changes only at a network upgrade |
 | `zebra_seeder_build_info` | Gauge | `version`, `git_sha`, `network` | Build and network identification | - |
 | `zebra_seeder_mutex_poisoning_total` | Counter | - | Mutex poisoning events | > 0 |
 | `zebra_seeder_dns_rate_limited_total` | Counter | - | Rate-limited queries | Spike indicates attack |
 | `zebra_seeder_dns_errors_total` | Counter | - | DNS errors | > 0 (sustained) |
-| `zebra_seeder_dns_queries_total` | Counter | `record_type=A\|AAAA\|SOA\|NS` | Total queries | - |
-| `zebra_seeder_dns_response_peers` | Histogram | - | Peers per response | - |
+| `zebra_seeder_dns_queries_total` | Counter | `record_type=A\|AAAA\|SOA\|NS\|other` | Total queries | - |
+| `zebra_seeder_dns_response_peers` | Summary | - | Peers per response | - |
 
 ### Sample Prometheus Queries
 
@@ -289,7 +312,7 @@ groups:
 **No peers returning:**
 ```bash
 # Check peer count
-curl -s http://localhost:9999/metrics | grep peers_servable
+curl -s http://localhost:9999/metrics | grep 'zebra_seeder_peers_servable'
 
 # Check logs for errors
 journalctl -u zebra-seeder -n 100
@@ -323,7 +346,7 @@ systemctl restart zebra-seeder
 **High memory usage:**
 ```bash
 # Check address book size
-curl -s http://localhost:9999/metrics | grep peers_known
+curl -s http://localhost:9999/metrics | grep 'zebra_seeder_peers_known'
 
 # Clear cache if needed (will rebuild)
 rm -rf ~/.cache/zebra/network/*
