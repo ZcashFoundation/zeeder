@@ -4629,7 +4629,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "zebra-seeder"
+name = "zeeder"
 version = "0.1.0"
 dependencies = [
  "async-trait",

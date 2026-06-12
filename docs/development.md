@@ -1,6 +1,6 @@
 # Development Guide
 
-Guide for contributors and developers working on zebra-seeder.
+Guide for contributors and developers working on zeeder.
 
 ## Getting Started
 
@@ -13,8 +13,8 @@ Guide for contributors and developers working on zebra-seeder.
 ### Clone and Build
 
 ```bash
-git clone https://github.com/zcashfoundation/zebra-seeder
-cd zebra-seeder
+git clone https://github.com/zcashfoundation/zeeder
+cd zeeder
 cargo build
 ```
 
@@ -25,9 +25,9 @@ cargo build
 cp .env.example .env
 
 # Edit .env for testnet (uses port 1053 to avoid requiring root)
-# ZEBRA_SEEDER__DNS__LISTEN_ADDR="0.0.0.0:1053"
-# ZEBRA_SEEDER__CRAWLER__NETWORK="Testnet"
-# ZEBRA_SEEDER__DNS__DOMAIN="testnet.seeder.example.com"
+# ZEEDER__DNS__LISTEN_ADDR="0.0.0.0:1053"
+# ZEEDER__CRAWLER__NETWORK="Testnet"
+# ZEEDER__DNS__DOMAIN="testnet.seeder.example.com"
 
 # Run
 cargo run -- start
@@ -39,7 +39,7 @@ dig @127.0.0.1 -p 1053 testnet.seeder.example.com A
 ## Project Structure
 
 ```
-zebra-seeder/
+zeeder/
 ├── src/
 │   ├── main.rs           # Entry point
 │   ├── commands.rs       # CLI command handling
@@ -181,7 +181,7 @@ For config tests that need environment variables, use `temp_env` so each test sc
 ```rust
 #[test]
 fn test_my_config() -> color_eyre::Result<()> {
-    temp_env::with_var("ZEBRA_SEEDER__MY_PARAM", Some("value"), || {
+    temp_env::with_var("ZEEDER__MY_PARAM", Some("value"), || {
         let config = SeederConfig::load_with_env(None)?;
         assert_eq!(config.my_param, "value");
         Ok(())
@@ -352,12 +352,12 @@ RUST_LOG=debug cargo run -- start
 
 **Trace-level (very verbose):**
 ```bash
-RUST_LOG=zebra_seeder=trace cargo run -- start
+RUST_LOG=zeeder=trace cargo run -- start
 ```
 
 **Filter by module:**
 ```bash
-RUST_LOG=zebra_seeder::dns::request_handler=debug cargo run -- start
+RUST_LOG=zeeder::dns::request_handler=debug cargo run -- start
 ```
 
 ## Release Process

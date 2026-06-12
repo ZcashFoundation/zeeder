@@ -1,10 +1,10 @@
 [package]
-name = "zebra-seeder"
+name = "zeeder"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "A Zcash DNS seeder based on the Zebra architecture."
-repository = "https://github.com/zcashfoundation/zebra-seeder"
+description = "Zeeder, a Zcash DNS seeder based on the Zebra architecture."
+repository = "https://github.com/zcashfoundation/zeeder"
 keywords = ["zcash", "zebra", "dns", "seeder", "blockchain"]
 categories = ["cryptography::cryptocurrencies", "network-programming"]
 

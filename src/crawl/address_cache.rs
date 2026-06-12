@@ -146,7 +146,7 @@ mod tests {
 
     use super::*;
 
-    const TEST_USER_AGENT: &str = "/zebra-seeder-test/";
+    const TEST_USER_AGENT: &str = "/zeeder-test/";
 
     fn empty_book() -> AddressBook {
         AddressBook::new(

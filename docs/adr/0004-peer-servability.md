@@ -24,8 +24,8 @@ Serve a peer only when it is *servable*: recently handshaked (`was_recently_live
 
 - Outdated-version and unverified-gossip peers are no longer served, closing issue #19.
 - Inbound-provenance and misbehaving peers are no longer advertised over DNS.
-- One tested predicate owns the decision, and rejection reasons are exported via `zebra_seeder_peers_unservable{reason}`.
-- The served set is smaller than the raw address book; on sparse networks such as testnet or IPv6, it can be thin. Watch `zebra_seeder_peers_servable`.
+- One tested predicate owns the decision, and rejection reasons are exported via `zeeder_peers_unservable{reason}`.
+- The served set is smaller than the raw address book; on sparse networks such as testnet or IPv6, it can be thin. Watch `zeeder_peers_servable`.
 - The floor reaches the highest upgrade the pinned zebra activates, NU6.2 today. Full NU7 enforcement arrives when a future zebra release activates it. A tripwire test pins the expected floor.
 
 ## Revision History

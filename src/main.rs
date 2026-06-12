@@ -47,7 +47,7 @@ mod tests {
     fn dotenv_path(name: &str) -> TestResult<PathBuf> {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         Ok(std::env::temp_dir().join(format!(
-            "zebra-seeder-{name}-{}-{timestamp}.env",
+            "zeeder-{name}-{}-{timestamp}.env",
             std::process::id()
         )))
     }

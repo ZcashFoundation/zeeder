@@ -1,6 +1,6 @@
-# zebra-seeder Context
+# zeeder Context
 
-This glossary defines terms that carry architectural meaning in zebra-seeder. Read it before changing peer servability, DNS behavior, metrics, or crawler integration.
+This glossary defines terms that carry architectural meaning in zeeder. Read it before changing peer servability, DNS behavior, metrics, or crawler integration.
 
 ## Servable
 
@@ -24,13 +24,13 @@ Metrics use the `addr_family` label with the stable values `v4` and `v6`.
 
 A silent drop is a rate-limit rejection where the seeder sends no DNS response. This avoids turning the seeder into an amplification source. Do not replace silent drops with REFUSED or another DNS error unless ADR 0003 is changed deliberately.
 
-Rate-limited packets increment `zebra_seeder_dns_rate_limited_total`.
+Rate-limited packets increment `zeeder_dns_rate_limited_total`.
 
 ## Protocol-Version Floor
 
-The protocol-version floor is the minimum peer protocol version zebra-network accepts during handshake. zebra-seeder does not store peer protocol versions itself. Instead, `SeederChainTip` pins zebra-network to the current activation height so outdated peers fail handshake before they can become servable.
+The protocol-version floor is the minimum peer protocol version zebra-network accepts during handshake. zeeder does not store peer protocol versions itself. Instead, `SeederChainTip` pins zebra-network to the current activation height so outdated peers fail handshake before they can become servable.
 
-The floor is reported through `zebra_seeder_min_protocol_version`. Network-upgrade changes should update the chain-tip tests and ADR 0004.
+The floor is reported through `zeeder_min_protocol_version`. Network-upgrade changes should update the chain-tip tests and ADR 0004.
 
 ## Contract Homes
 

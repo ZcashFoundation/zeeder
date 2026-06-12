@@ -12,7 +12,7 @@ const RUST_LOG_ENV: &str = "RUST_LOG";
 
 /// Command-line arguments for the seeder.
 #[derive(Parser, Debug)]
-#[command(author, version = crate::build_info::cli_version(), about = "Zcash DNS Seeder", long_about = None)]
+#[command(author, version = crate::build_info::cli_version(), about = "Zeeder, a Zcash DNS seeder", long_about = None)]
 pub(crate) struct SeederApp {
     /// Path to a TOML configuration file.
     #[arg(short, long, global = true)]
@@ -60,7 +60,7 @@ impl SeederApp {
 
         match app.command {
             Commands::Start => {
-                info!("Starting zebra-seeder with config: {config:?}");
+                info!("Starting zeeder with config: {config:?}");
 
                 if let Some(metrics_config) = &config.metrics {
                     crate::metrics::init(metrics_config.endpoint_addr)?;
@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn test_cli_structure() {
         let cmd = SeederApp::command();
-        assert_eq!(cmd.get_name(), "zebra-seeder");
+        assert_eq!(cmd.get_name(), "zeeder");
     }
 
     #[test]
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn parses_start_subcommand() -> TestResult {
-        let app = SeederApp::try_parse_from(["zebra-seeder", "start"])?;
+        let app = SeederApp::try_parse_from(["zeeder", "start"])?;
         assert!(matches!(app.command, Commands::Start));
         assert!(app.config.is_none());
         Ok(())
@@ -154,19 +154,15 @@ mod tests {
 
     #[test]
     fn parses_print_config_subcommand() -> TestResult {
-        let app = SeederApp::try_parse_from(["zebra-seeder", "print-config"])?;
+        let app = SeederApp::try_parse_from(["zeeder", "print-config"])?;
         assert!(matches!(app.command, Commands::PrintConfig));
         Ok(())
     }
 
     #[test]
     fn parses_global_config_before_subcommand() -> TestResult {
-        let app = SeederApp::try_parse_from([
-            "zebra-seeder",
-            "--config",
-            "/path/to/config.toml",
-            "start",
-        ])?;
+        let app =
+            SeederApp::try_parse_from(["zeeder", "--config", "/path/to/config.toml", "start"])?;
         assert_eq!(
             app.config.as_deref().and_then(std::path::Path::to_str),
             Some("/path/to/config.toml")
@@ -176,12 +172,8 @@ mod tests {
 
     #[test]
     fn parses_global_config_after_subcommand() -> TestResult {
-        let app = SeederApp::try_parse_from([
-            "zebra-seeder",
-            "start",
-            "--config",
-            "/path/to/config.toml",
-        ])?;
+        let app =
+            SeederApp::try_parse_from(["zeeder", "start", "--config", "/path/to/config.toml"])?;
         assert_eq!(
             app.config.as_deref().and_then(std::path::Path::to_str),
             Some("/path/to/config.toml")

@@ -1,5 +1,5 @@
 //! Layered configuration for the seeder: defaults, then an optional TOML file,
-//! then `ZEBRA_SEEDER__*` environment variables (each layer overriding the last).
+//! then `ZEEDER__*` environment variables (each layer overriding the last).
 
 use color_eyre::eyre::{Context, Result, eyre};
 use config::{Config, Environment, File};
@@ -11,7 +11,7 @@ use std::{
 };
 use zebra_chain::parameters::Network;
 
-/// Configuration for the Zebra seeder.
+/// Zeeder process configuration.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct SeederConfig {
@@ -189,7 +189,7 @@ impl SeederConfig {
     /// Precedence, lowest to highest:
     /// 1. Default values
     /// 2. Config file (if a path is provided)
-    /// 3. Environment variables (`ZEBRA_SEEDER__*`)
+    /// 3. Environment variables (`ZEEDER__*`)
     pub(crate) fn load_with_env(path: Option<std::path::PathBuf>) -> Result<Self> {
         let mut builder = Config::builder().add_source(Config::try_from(&Self::default())?);
 
@@ -198,7 +198,7 @@ impl SeederConfig {
         }
 
         builder = builder.add_source(
-            Environment::with_prefix("ZEBRA_SEEDER")
+            Environment::with_prefix("ZEEDER")
                 .separator("__")
                 .try_parsing(true),
         );
@@ -234,7 +234,7 @@ mod tests {
     fn config_file_path(name: &str) -> TestResult<PathBuf> {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 
-        Ok(std::env::temp_dir().join(format!("zebra-seeder-{name}-{timestamp}.toml")))
+        Ok(std::env::temp_dir().join(format!("zeeder-{name}-{timestamp}.toml")))
     }
 
     #[test]
@@ -277,13 +277,13 @@ mod tests {
     fn operations_docs_include_config_reference_rows() {
         let operations_docs = include_str!("../docs/operations.md");
         let expected_rows = [
-            "| `dns.listen_addr` | `ZEBRA_SEEDER__DNS__LISTEN_ADDR` | `0.0.0.0:53` | DNS server address and port |",
-            "| `dns.ttl` | `ZEBRA_SEEDER__DNS__TTL` | `600` | DNS response TTL in seconds |",
-            "| `dns.domain` | `ZEBRA_SEEDER__DNS__DOMAIN` | `mainnet.seeder.example.com` | Authoritative domain |",
-            "| `crawler.network` | `ZEBRA_SEEDER__CRAWLER__NETWORK` | `Mainnet` | Zcash network (`Mainnet` or `Testnet`) |",
-            "| `rate_limit.queries_per_second` | `ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP; must be greater than 0 |",
-            "| `rate_limit.burst_size` | `ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity; must be greater than 0 |",
-            "| `metrics.endpoint_addr` | `ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR` | (disabled) | Prometheus endpoint |",
+            "| `dns.listen_addr` | `ZEEDER__DNS__LISTEN_ADDR` | `0.0.0.0:53` | DNS server address and port |",
+            "| `dns.ttl` | `ZEEDER__DNS__TTL` | `600` | DNS response TTL in seconds |",
+            "| `dns.domain` | `ZEEDER__DNS__DOMAIN` | `mainnet.seeder.example.com` | Authoritative domain |",
+            "| `crawler.network` | `ZEEDER__CRAWLER__NETWORK` | `Mainnet` | Zcash network (`Mainnet` or `Testnet`) |",
+            "| `rate_limit.queries_per_second` | `ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP; must be greater than 0 |",
+            "| `rate_limit.burst_size` | `ZEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity; must be greater than 0 |",
+            "| `metrics.endpoint_addr` | `ZEEDER__METRICS__ENDPOINT_ADDR` | (disabled) | Prometheus endpoint |",
         ];
 
         for row in expected_rows {
@@ -305,13 +305,13 @@ mod tests {
         }
 
         let expected_keys = [
-            "ZEBRA_SEEDER__CRAWLER__NETWORK",
-            "ZEBRA_SEEDER__DNS__LISTEN_ADDR",
-            "ZEBRA_SEEDER__DNS__TTL",
-            "ZEBRA_SEEDER__DNS__DOMAIN",
-            "ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR",
-            "ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND",
-            "ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE",
+            "ZEEDER__CRAWLER__NETWORK",
+            "ZEEDER__DNS__LISTEN_ADDR",
+            "ZEEDER__DNS__TTL",
+            "ZEEDER__DNS__DOMAIN",
+            "ZEEDER__METRICS__ENDPOINT_ADDR",
+            "ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND",
+            "ZEEDER__RATE_LIMIT__BURST_SIZE",
         ];
         let actual_keys: Vec<&str> = env_example_vars
             .iter()
@@ -388,17 +388,17 @@ endpoint_addr = "127.0.0.1:9999"
 
         let config = temp_env::with_vars(
             [
-                ("ZEBRA_SEEDER__CRAWLER__NETWORK", None::<&str>),
-                ("ZEBRA_SEEDER__DNS__DOMAIN", None),
-                ("ZEBRA_SEEDER__DNS__LISTEN_ADDR", None),
-                ("ZEBRA_SEEDER__DNS__TTL", None),
-                ("ZEBRA_SEEDER__DNS_TTL", None),
-                ("ZEBRA_SEEDER__DNS__TTTL", None),
-                ("ZEBRA_SEEDER__NETWORK__NETWORK", None),
-                ("ZEBRA_SEEDER__METRICS__ENDPOINT_ADRR", None),
-                ("ZEBRA_SEEDER__RATE_LIMIT__BURSTT_SIZE", None),
-                ("ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND", None),
-                ("ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE", None),
+                ("ZEEDER__CRAWLER__NETWORK", None::<&str>),
+                ("ZEEDER__DNS__DOMAIN", None),
+                ("ZEEDER__DNS__LISTEN_ADDR", None),
+                ("ZEEDER__DNS__TTL", None),
+                ("ZEEDER__DNS_TTL", None),
+                ("ZEEDER__DNS__TTTL", None),
+                ("ZEEDER__NETWORK__NETWORK", None),
+                ("ZEEDER__METRICS__ENDPOINT_ADRR", None),
+                ("ZEEDER__RATE_LIMIT__BURSTT_SIZE", None),
+                ("ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND", None),
+                ("ZEEDER__RATE_LIMIT__BURST_SIZE", None),
             ],
             || SeederConfig::load_with_env(Some(path.clone())),
         );
@@ -426,18 +426,16 @@ endpoint_addr = "127.0.0.1:9999"
 
     #[test]
     fn test_env_overrides() -> TestResult {
-        let config = temp_env::with_var(
-            "ZEBRA_SEEDER__DNS__DOMAIN",
-            Some("test.example.com"),
-            || SeederConfig::load_with_env(None),
-        )?;
+        let config = temp_env::with_var("ZEEDER__DNS__DOMAIN", Some("test.example.com"), || {
+            SeederConfig::load_with_env(None)
+        })?;
         assert_eq!(config.dns.domain, "test.example.com");
         Ok(())
     }
 
     #[test]
     fn flat_dns_env_key_is_rejected() {
-        let config = temp_env::with_var("ZEBRA_SEEDER__DNS_TTL", Some("300"), || {
+        let config = temp_env::with_var("ZEEDER__DNS_TTL", Some("300"), || {
             SeederConfig::load_with_env(None)
         });
 
@@ -446,7 +444,7 @@ endpoint_addr = "127.0.0.1:9999"
 
     #[test]
     fn upstream_network_env_key_is_rejected() {
-        let config = temp_env::with_var("ZEBRA_SEEDER__NETWORK__NETWORK", Some("Testnet"), || {
+        let config = temp_env::with_var("ZEEDER__NETWORK__NETWORK", Some("Testnet"), || {
             SeederConfig::load_with_env(None)
         });
 
@@ -457,8 +455,18 @@ endpoint_addr = "127.0.0.1:9999"
     }
 
     #[test]
+    fn zebra_namespace_env_key_is_ignored() -> TestResult {
+        let config = temp_env::with_var("ZEBRA_NETWORK__NETWORK", Some("Testnet"), || {
+            SeederConfig::load_with_env(None)
+        })?;
+
+        assert_eq!(config.crawler.network, CrawlerNetwork::Mainnet);
+        Ok(())
+    }
+
+    #[test]
     fn unknown_dns_env_key_is_rejected() {
-        let config = temp_env::with_var("ZEBRA_SEEDER__DNS__TTTL", Some("300"), || {
+        let config = temp_env::with_var("ZEEDER__DNS__TTTL", Some("300"), || {
             SeederConfig::load_with_env(None)
         });
 
@@ -467,7 +475,7 @@ endpoint_addr = "127.0.0.1:9999"
 
     #[test]
     fn invalid_dns_domain_is_rejected() {
-        let config = temp_env::with_var("ZEBRA_SEEDER__DNS__DOMAIN", Some("not a domain"), || {
+        let config = temp_env::with_var("ZEEDER__DNS__DOMAIN", Some("not a domain"), || {
             SeederConfig::load_with_env(None)
         });
 
@@ -477,7 +485,7 @@ endpoint_addr = "127.0.0.1:9999"
     #[test]
     fn unknown_metrics_env_key_is_rejected() {
         let config = temp_env::with_var(
-            "ZEBRA_SEEDER__METRICS__ENDPOINT_ADRR",
+            "ZEEDER__METRICS__ENDPOINT_ADRR",
             Some("127.0.0.1:0"),
             || SeederConfig::load_with_env(None),
         );
@@ -488,7 +496,7 @@ endpoint_addr = "127.0.0.1:9999"
     #[test]
     fn metrics_endpoint_env_enables_metrics() -> TestResult {
         let config = temp_env::with_var(
-            "ZEBRA_SEEDER__METRICS__ENDPOINT_ADDR",
+            "ZEEDER__METRICS__ENDPOINT_ADDR",
             Some("127.0.0.1:9999"),
             || SeederConfig::load_with_env(None),
         )?;
@@ -504,28 +512,26 @@ endpoint_addr = "127.0.0.1:9999"
 
     #[test]
     fn unknown_rate_limit_env_key_is_rejected() {
-        let config =
-            temp_env::with_var("ZEBRA_SEEDER__RATE_LIMIT__BURSTT_SIZE", Some("100"), || {
-                SeederConfig::load_with_env(None)
-            });
+        let config = temp_env::with_var("ZEEDER__RATE_LIMIT__BURSTT_SIZE", Some("100"), || {
+            SeederConfig::load_with_env(None)
+        });
 
         assert!(config.is_err(), "unknown rate-limit config key should fail");
     }
 
     #[test]
     fn zero_rate_limit_is_rejected() {
-        let config = temp_env::with_var(
-            "ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND",
-            Some("0"),
-            || SeederConfig::load_with_env(None),
-        );
+        let config =
+            temp_env::with_var("ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND", Some("0"), || {
+                SeederConfig::load_with_env(None)
+            });
 
         assert!(config.is_err(), "zero query rate should fail");
     }
 
     #[test]
     fn zero_rate_limit_burst_is_rejected() {
-        let config = temp_env::with_var("ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE", Some("0"), || {
+        let config = temp_env::with_var("ZEEDER__RATE_LIMIT__BURST_SIZE", Some("0"), || {
             SeederConfig::load_with_env(None)
         });
 
@@ -536,8 +542,8 @@ endpoint_addr = "127.0.0.1:9999"
     fn test_config_loading_from_env_overrides_network() -> TestResult {
         let config = temp_env::with_vars(
             [
-                ("ZEBRA_SEEDER__CRAWLER__NETWORK", Some("Testnet")),
-                ("ZEBRA_SEEDER__DNS__LISTEN_ADDR", Some("0.0.0.0:1053")),
+                ("ZEEDER__CRAWLER__NETWORK", Some("Testnet")),
+                ("ZEEDER__DNS__LISTEN_ADDR", Some("0.0.0.0:1053")),
             ],
             || SeederConfig::load_with_env(None),
         )?;
@@ -552,7 +558,7 @@ endpoint_addr = "127.0.0.1:9999"
 
     #[test]
     fn test_dns_ttl_from_env() -> TestResult {
-        let config = temp_env::with_var("ZEBRA_SEEDER__DNS__TTL", Some("300"), || {
+        let config = temp_env::with_var("ZEEDER__DNS__TTL", Some("300"), || {
             SeederConfig::load_with_env(None)
         })?;
         assert_eq!(config.dns.ttl, 300);
@@ -563,8 +569,8 @@ endpoint_addr = "127.0.0.1:9999"
     fn test_rate_limit_from_env() -> TestResult {
         let config = temp_env::with_vars(
             [
-                ("ZEBRA_SEEDER__RATE_LIMIT__QUERIES_PER_SECOND", Some("50")),
-                ("ZEBRA_SEEDER__RATE_LIMIT__BURST_SIZE", Some("100")),
+                ("ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND", Some("50")),
+                ("ZEEDER__RATE_LIMIT__BURST_SIZE", Some("100")),
             ],
             || SeederConfig::load_with_env(None),
         )?;

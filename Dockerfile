@@ -16,9 +16,9 @@ WORKDIR /app
 
 # Run as distroless nonroot and keep Zebra's peer cache out of /root.
 ENV XDG_CACHE_HOME=/cache \
-    ZEBRA_SEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053
+    ZEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053
 
-COPY --from=builder --chown=65532:65532 /app/target/release/zebra-seeder /app/zebra-seeder
+COPY --from=builder --chown=65532:65532 /app/target/release/zeeder /app/zeeder
 COPY --from=builder --chown=65532:65532 /app/cache /cache
 
 # 1053: DNS (UDP/TCP)
@@ -27,4 +27,4 @@ EXPOSE 1053/udp 1053/tcp 9999/tcp
 
 USER 65532:65532
 
-ENTRYPOINT ["/app/zebra-seeder", "start"]
+ENTRYPOINT ["/app/zeeder", "start"]

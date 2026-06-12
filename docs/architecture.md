@@ -2,7 +2,7 @@
 
 ## Overview
 
-zebra-seeder is a DNS seeder for Zcash that crawls the network and serves DNS records pointing to healthy peers.
+zeeder is a DNS seeder for Zcash that crawls the network and serves DNS records pointing to healthy peers.
 
 ```mermaid
 graph TD
@@ -186,7 +186,7 @@ sequenceDiagram
 
 **Behavior:**
 - Rate-limited requests: dropped silently (no response)
-- Metric: `zebra_seeder_dns_rate_limited_total`
+- Metric: `zeeder_dns_rate_limited_total`
 
 ---
 
@@ -248,7 +248,7 @@ Servable peers are then separated by address family (IPv4/IPv6), shuffled, and c
 ### Configuration System
 
 **Override priority:**
-1. Environment variables (`ZEBRA_SEEDER__*`)
+1. Environment variables (`ZEEDER__*`)
 2. TOML config file
 3. Hardcoded defaults
 

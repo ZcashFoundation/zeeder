@@ -1,7 +1,7 @@
-# zebra-seeder
+# zeeder
 
-[![Rust CI](https://github.com/zcashfoundation/zebra-seeder/actions/workflows/ci.yml/badge.svg)](https://github.com/zcashfoundation/zebra-seeder/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/zcashfoundation/zebra-seeder/branch/main/graph/badge.svg)](https://codecov.io/gh/zcashfoundation/zebra-seeder)
+[![Rust CI](https://github.com/zcashfoundation/zeeder/actions/workflows/ci.yml/badge.svg)](https://github.com/zcashfoundation/zeeder/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/zcashfoundation/zeeder/branch/main/graph/badge.svg)](https://codecov.io/gh/zcashfoundation/zeeder)
 
 A Rust-based DNS seeder for the Zcash network, mirroring patterns from the [Zebra](https://github.com/zcashfoundation/zebra) project.
 

@@ -1,4 +1,4 @@
-# zebra-seeder Documentation
+# zeeder Documentation
 
 Documentation for the Zcash DNS seeder.
 
@@ -15,7 +15,7 @@ Documentation for the Zcash DNS seeder.
 **👨‍💻 Developers:** Read [Architecture](architecture.md) → [Development](development.md)  
 **👀 Code Reviewers:** Read [Architecture](architecture.md)
 
-## What is zebra-seeder?
+## What is zeeder?
 
 A DNS seeder for Zcash that:
 - Crawls the network to discover healthy peers
