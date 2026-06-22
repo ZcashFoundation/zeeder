@@ -499,9 +499,9 @@ dependencies = [
 
 [[package]]
 name = "config"
-version = "0.15.23"
+version = "0.15.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f316c6237b2d38be61949ecd15268a4c6ca32570079394a2444d9ce2c72a72d8"
+checksum = "0b34d0237145f33580b89724f75d16950efd3e2c91b2d823917ecb69ec7f84f0"
 dependencies = [
  "pathdiff",
  "serde_core",
@@ -4529,9 +4529,9 @@ dependencies = [
 
 [[package]]
 name = "zebra-chain"
-version = "10.0.0"
+version = "10.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db447036d6c325d9b303b7583cfa1c96f09d3bd3e6eca452dfc48ee2e1ed0e14"
+checksum = "9a3a32562497425712e17b78c42d73bb69560053205653bb6b6e3e1aed6217ec"
 dependencies = [
  "bech32",
  "bitflags",
