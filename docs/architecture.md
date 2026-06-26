@@ -2,20 +2,23 @@
 
 ## Overview
 
-zeeder is a DNS seeder for Zcash that crawls the network and serves DNS records pointing to healthy peers.
+zeeder is a DNS seeder for Zcash that crawls the network and serves DNS records pointing to healthy peers. One process serves a zone per network (mainnet, testnet), running an independent crawler for each and answering all of their zones on one DNS listener.
 
 ```mermaid
 graph TD
     A[DNS Client] -->|UDP Query| B[Hickory DNS Server]
     B --> C[Rate Limiter]
     C -->|Check IP| D{Allow?}
-    D -->|Yes| E[DnsRequestHandler]
     D -->|No| F[Drop Packet]
-    E --> G[Servable Peer Cache]
-    G -->|watch channel| H[Cache Updater]
-    H -->|5s interval| I[Address Book]
-    I --> J[zebra-network]
-    J -->|Peer Discovery| K[Zcash Network]
+    D -->|Yes| E[DnsRequestHandler]
+    E -->|Route by zone_of| Z{Matching zone?}
+    Z -->|None| R[REFUSED]
+    Z -->|mainnet| G1[Mainnet Servable Peer Cache]
+    Z -->|testnet| G2[Testnet Servable Peer Cache]
+    G1 -->|watch channel| H1[Mainnet Crawler]
+    G2 -->|watch channel| H2[Testnet Crawler]
+    H1 --> K[Zcash Mainnet]
+    H2 --> K2[Zcash Testnet]
     E --> L[Return A/AAAA Records]
 ```
 
@@ -32,13 +35,13 @@ graph TD
 
 ### Startup Sequence
 
-1. Load configuration (defaults, optional TOML file, then environment overrides)
+1. Load configuration (defaults, optional TOML file, then environment overrides); fail if no zone is configured
 2. Initialize metrics endpoint (if enabled)
-3. Bind DNS UDP and TCP sockets, failing before P2P startup if the configured address is unavailable
-4. Initialize zebra-network with address book
-5. Create rate limiter (if enabled)
-6. Spawn address cache updater (updates every 5 seconds)
-7. Register the pre-bound sockets and start DNS serving
+3. Bind the shared DNS UDP and TCP sockets, failing before P2P startup if the configured address is unavailable
+4. For each configured network: pin its chain-tip floor, initialize zebra-network with its address book, and spawn its address cache updater (every 5 seconds), building one seed zone bound to that network's servable-peer feed
+5. Create the shared rate limiter (if enabled)
+6. Start the health endpoint (if enabled), reporting per-zone readiness
+7. Register the pre-bound sockets and start the DNS server with the routed zone set
 8. Run until the DNS server exits, SIGINT is received, or SIGTERM is received
 
 ### DNS Query Handling
@@ -49,9 +52,9 @@ sequenceDiagram
     DNS Server->>Rate Limiter: Check IP limit
     alt Rate limit OK
         Rate Limiter->>DnsRequestHandler: Process query
-        DnsRequestHandler->>DnsRequestHandler: Classify query name and type
+        DnsRequestHandler->>DnsRequestHandler: Route to matching zone by name
         alt Exact seed name, A/AAAA with peers
-            DnsRequestHandler->>Servable Peer Cache: Read cached peers
+            DnsRequestHandler->>Servable Peer Cache: Read matched zone's cached peers
             Note over DnsRequestHandler,Servable Peer Cache: Lock-free read via watch channel
             Servable Peer Cache-->>DnsRequestHandler: IPv4 or IPv6 peer list
             DnsRequestHandler-->>DNS Server: A/AAAA records
@@ -65,7 +68,7 @@ sequenceDiagram
         else In-zone non-apex or unsupported type
             DnsRequestHandler-->>DNS Server: NODATA + SOA
             DNS Server-->>Client: Empty NOERROR with SOA
-        else Out of zone
+        else Outside every zone
             DnsRequestHandler-->>DNS Server: REFUSED
             DNS Server-->>Client: REFUSED
         end
@@ -79,12 +82,12 @@ sequenceDiagram
 1. Client sends DNS query
 2. Rate limiter checks if IP is within limits
 3. If rate-limited: packet dropped silently (no amplification)
-4. If allowed: classify the query against `dns.domain`
-5. For exact `dns.domain` A/AAAA queries, read cached addresses (lock-free via watch channel)
+4. If allowed: route the query to the zone whose domain contains the query name
+5. For an exact zone-domain A/AAAA query, read that zone's cached addresses (lock-free via watch channel)
 6. Return pre-filtered and shuffled peers, or NODATA plus SOA if that address family has no servable peers
 7. Return static SOA/NS metadata for SOA/NS queries
 8. Return NODATA plus SOA for unsupported exact-name queries or deeper in-zone labels
-9. Return REFUSED for names outside the configured seed domain
+9. Return REFUSED for names outside every configured zone
 
 ### Address Cache Updates
 
@@ -146,9 +149,10 @@ sequenceDiagram
 - Address book maintenance
 
 **Our usage:**
-- Initialize with config and a dummy inbound service (reject all)
-- Pass a `SeederChainTip` pinned to the current network upgrade, so the handshake rejects outdated-version peers
-- Read the Address Book for servable peers
+- Initialize one independent crawler per configured network, each with a dummy inbound service (reject all)
+- Pass each crawler a `SeederChainTip` pinned to that network's current upgrade, so the handshake rejects outdated-version peers
+- Read each network's Address Book for its servable peers
+- Hold one peer-set handle per network for the process lifetime (dropping it stops that network's crawl)
 - Never send blockchain data (we're not a full node)
 
 ---
@@ -163,10 +167,11 @@ sequenceDiagram
 - Response building
 
 **Our usage:**
-- Implement `RequestHandler` trait via `DnsRequestHandler`
-- Handle A, AAAA, SOA, and NS queries at the configured seed name
+- Implement `RequestHandler` trait via a single `DnsRequestHandler` that owns every zone
+- Route each query to the zone whose domain contains the query name, reading that zone's servable-peer feed
+- Handle A, AAAA, SOA, and NS queries at each zone's exact seed name
 - Return NODATA plus SOA for empty A/AAAA families, unsupported exact-name queries, and deeper in-zone labels
-- Return REFUSED for unauthorized domains
+- Return REFUSED for names outside every zone
 
 ---
 
@@ -219,8 +224,8 @@ sequenceDiagram
 ### Address Book & Mutex Handling
 
 **Mutex Strategy:**
-- Address Book protected by `std::sync::Mutex`
-- Only locked by cache updater (every 5 seconds)
+- Each network's Address Book is protected by its own `std::sync::Mutex`
+- Only locked by that network's cache updater (every 5 seconds)
 - DNS queries never lock the mutex directly
 
 **Poisoning Recovery:**
@@ -262,7 +267,19 @@ Servable peers are then separated by address family (IPv4/IPv6), shuffled, and c
 
 ### Metrics
 
-Prometheus metrics are exposed on the configured metrics endpoint. Architecture-level metrics are grouped around peer servability, DNS traffic, rate limiting, mutex poisoning, protocol-version floor, and build identity. The canonical metric reference, labels, and alert guidance live in [Operations](operations.md#metrics).
+Prometheus metrics are exposed on the configured metrics endpoint. Architecture-level metrics are grouped around peer servability, DNS traffic, rate limiting, mutex poisoning, protocol-version floor, and build identity. Per-network metrics carry a `network` label. The canonical metric reference, labels, and alert guidance live in [Operations](operations.md#metrics).
+
+---
+
+### Health Endpoint
+
+**What:** A minimal HTTP endpoint for orchestrator liveness and readiness probes, served only when `health.endpoint_addr` is configured.
+
+**Behavior:**
+- `GET /health` returns `200` while the process runs (liveness).
+- `GET /ready` returns `200` only when every zone has at least `health.ready_threshold` servable peers, otherwise `503` with a per-zone breakdown (readiness).
+
+It reads each zone's servable-peer feed directly, so readiness reflects live crawl state. The contract is a plain status code, so it is a small hand-rolled HTTP/1.1 responder rather than a web framework.
 
 ## Architecture Decision Records
 
@@ -270,6 +287,7 @@ Prometheus metrics are exposed on the configured metrics endpoint. Architecture-
 - [ADR 0002: Use Hickory DNS for DNS Server](adr/0002-hickory-dns.md)
 - [ADR 0003: Implement Per-IP Rate Limiting](adr/0003-rate-limiting.md)
 - [ADR 0004: Peer Servability and Protocol-Version Floor](adr/0004-peer-servability.md)
+- [ADR 0005: Multi-Network Serving Topology](adr/0005-multi-network-topology.md)
 
 ## Design Principles
 

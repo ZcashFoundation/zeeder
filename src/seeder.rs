@@ -1,4 +1,5 @@
-//! Process composition for zebra-network crawling and DNS serving.
+//! Process composition: one zebra-network crawler per configured network, all
+//! served as DNS zones on a single shared listener.
 
 use std::{net::SocketAddr, time::Duration};
 
@@ -10,12 +11,13 @@ use zebra_chain::chain_tip::ChainTip;
 
 use crate::{
     build_info,
-    config::SeederConfig,
+    config::{SeederConfig, ZcashNetwork, ZoneConfig},
     crawl::{address_cache, chain_tip},
     dns::{
         rate_limiter::RateLimiter,
         request_handler::{DnsRequestHandler, SeedZone},
     },
+    health,
     metrics::{BUILD_INFO, LABEL_GIT_SHA, LABEL_NETWORK, LABEL_VERSION, MIN_PROTOCOL_VERSION},
 };
 
@@ -26,47 +28,20 @@ struct DnsSockets {
 
 /// Run the seeder until the DNS server exits or the process receives a shutdown signal.
 pub(crate) async fn run(config: SeederConfig) -> Result<()> {
-    let seed_zone = SeedZone::new(&config.dns.domain, &config.dns.nameserver, config.dns.ttl)?;
     let dns_sockets = bind_dns_sockets(config.dns.listen_addr).await?;
 
-    tracing::info!("Initializing zebra-network...");
-    let network_config = config.crawler.network_config();
-    let network = network_config.network.clone();
-
-    // Dummy inbound service that rejects everything.
-    let inbound_service = tower::service_fn(|_req: zebra_network::Request| async move {
-        Ok::<zebra_network::Response, Box<dyn std::error::Error + Send + Sync + 'static>>(
-            zebra_network::Response::Nil,
-        )
-    });
-
     let user_agent = build_info::user_agent();
-
     tracing::info!("User-Agent: {user_agent}");
 
-    // Pin a chain tip at the current network upgrade so zebra-network's
-    // handshake rejects peers advertising an outdated protocol version.
-    let tip = chain_tip::SeederChainTip::at_current_upgrade(&network);
-    let min_protocol_version =
-        zebra_network::Version::min_remote_for_height(&network, tip.best_tip_height());
-    tracing::info!(
-        network = %network,
-        %min_protocol_version,
-        "enforcing peer protocol-version floor"
-    );
-    gauge!(MIN_PROTOCOL_VERSION).set(f64::from(min_protocol_version.0));
-    gauge!(
-        BUILD_INFO,
-        LABEL_VERSION => build_info::VERSION,
-        LABEL_GIT_SHA => build_info::git_sha_label(),
-        LABEL_NETWORK => network.to_string(),
-    )
-    .set(1.0);
+    let mut seed_zones = Vec::with_capacity(config.zones.len());
+    let mut crawler_guards = Vec::with_capacity(config.zones.len());
 
-    let (peer_set, address_book, _misbehavior_sender) =
-        zebra_network::init(network_config, inbound_service, tip, user_agent).await;
-    // Keep the peer set in scope so zebra-network keeps crawling for the
-    // lifetime of the seeder.
+    for (network, zone) in &config.zones {
+        let (seed_zone, crawler_guard) =
+            spawn_network_crawler(*network, zone, user_agent.clone()).await?;
+        seed_zones.push(seed_zone);
+        crawler_guards.push(crawler_guard);
+    }
 
     let rate_limiter = config
         .rate_limit
@@ -74,11 +49,18 @@ pub(crate) async fn run(config: SeederConfig) -> Result<()> {
         .map(RateLimiter::new)
         .transpose()?;
 
+    if let Some(health_config) = &config.health {
+        health::spawn(
+            health_config.endpoint_addr,
+            health_config.ready_threshold,
+            seed_zones.iter().map(SeedZone::readiness).collect(),
+        )
+        .await?;
+    }
+
     tracing::info!("Initializing DNS server on {}", config.dns.listen_addr);
 
-    let servable_peers = address_cache::spawn(address_book.clone(), network);
-
-    let request_handler = DnsRequestHandler::new(servable_peers, seed_zone, rate_limiter);
+    let request_handler = DnsRequestHandler::new(seed_zones, rate_limiter);
     let mut server = Server::new(request_handler);
 
     server.register_socket(dns_sockets.udp_socket);
@@ -100,9 +82,75 @@ pub(crate) async fn run(config: SeederConfig) -> Result<()> {
         }
     }
 
-    drop(peer_set);
+    // Dropping each crawler guard aborts that network's crawl tasks.
+    drop(crawler_guards);
 
     Ok(())
+}
+
+/// Start one network's crawler and wire its servable-peer cache to a seed zone.
+///
+/// Returns the seed zone the DNS handler serves and an opaque guard the caller
+/// must keep alive; dropping the guard stops this network's crawl.
+async fn spawn_network_crawler(
+    network: ZcashNetwork,
+    zone: &ZoneConfig,
+    user_agent: String,
+) -> Result<(SeedZone, impl Send + 'static)> {
+    let network_config = network.network_config();
+    let zcash_network = network_config.network.clone();
+    let network_label = network.label();
+
+    tracing::info!(
+        network = network_label,
+        "Initializing zebra-network crawler"
+    );
+
+    // Dummy inbound service that rejects everything.
+    let inbound_service = tower::service_fn(|_req: zebra_network::Request| async move {
+        Ok::<zebra_network::Response, Box<dyn std::error::Error + Send + Sync + 'static>>(
+            zebra_network::Response::Nil,
+        )
+    });
+
+    // Pin a chain tip at the current network upgrade so zebra-network's
+    // handshake rejects peers advertising an outdated protocol version.
+    let tip = chain_tip::SeederChainTip::at_current_upgrade(&zcash_network);
+    let min_protocol_version =
+        zebra_network::Version::min_remote_for_height(&zcash_network, tip.best_tip_height());
+    tracing::info!(
+        network = network_label,
+        %min_protocol_version,
+        "enforcing peer protocol-version floor"
+    );
+    gauge!(MIN_PROTOCOL_VERSION, LABEL_NETWORK => network_label)
+        .set(f64::from(min_protocol_version.0));
+    gauge!(
+        BUILD_INFO,
+        LABEL_VERSION => build_info::VERSION,
+        LABEL_GIT_SHA => build_info::git_sha_label(),
+        LABEL_NETWORK => network_label,
+    )
+    .set(1.0);
+
+    let (peer_set, address_book, misbehavior_sender) =
+        zebra_network::init(network_config, inbound_service, tip, user_agent).await;
+
+    let servable_peers = address_cache::spawn(address_book, network);
+
+    let seed_zone = SeedZone::new(
+        network,
+        &zone.domain,
+        &zone.nameserver,
+        zone.ttl,
+        servable_peers,
+    )?;
+
+    // `peer_set` is the crawl kill-switch (its drop aborts the crawl tasks);
+    // `misbehavior_sender` keeps zebra-network's misbehavior batch task alive.
+    let crawler_guard = (peer_set, misbehavior_sender);
+
+    Ok((seed_zone, crawler_guard))
 }
 
 async fn bind_dns_sockets(listen_addr: SocketAddr) -> Result<DnsSockets> {
