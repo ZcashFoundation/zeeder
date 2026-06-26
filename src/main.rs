@@ -14,6 +14,7 @@ mod commands;
 mod config;
 mod crawl;
 mod dns;
+mod health;
 mod metrics;
 mod seeder;
 
@@ -147,6 +148,7 @@ mod tests {
             "docs/adr/0002-hickory-dns.md",
             "docs/adr/0003-rate-limiting.md",
             "docs/adr/0004-peer-servability.md",
+            "docs/adr/0005-multi-network-topology.md",
         ];
 
         for doc in docs {
