@@ -90,8 +90,9 @@ mod tests {
     #[test]
     fn operations_docs_describe_peer_response_metric_as_prometheus_summary() {
         let operations_docs = include_str!("../docs/operations.md");
-        let response_peers_metric_row =
-            format!("| `{DNS_RESPONSE_PEERS}` | Summary | - | Peers per response | - |");
+        let response_peers_metric_row = format!(
+            "| `{DNS_RESPONSE_PEERS}` | Summary | `network=mainnet\\|testnet` | Peers per response | - |"
+        );
 
         assert!(
             operations_docs.contains(&response_peers_metric_row),
@@ -103,7 +104,7 @@ mod tests {
     fn operations_docs_use_servability_vocabulary_for_peer_metrics() {
         let operations_docs = include_str!("../docs/operations.md");
         let unservable_metric_row = format!(
-            "| `{PEERS_UNSERVABLE}` | Gauge | `reason=not_routable\\|wrong_port\\|not_recently_live\\|not_full_node\\|inbound\\|misbehaving` | Unservable peers, by reason | - |"
+            "| `{PEERS_UNSERVABLE}` | Gauge | `network=mainnet\\|testnet`, `reason=not_routable\\|wrong_port\\|not_recently_live\\|not_full_node\\|inbound\\|misbehaving` | Unservable peers, by reason | - |"
         );
 
         assert!(
@@ -136,12 +137,16 @@ mod tests {
             "DNS liveness probe should be documented"
         );
         assert!(
-            operations_docs.contains(PEERS_SERVABLE),
-            "`{PEERS_SERVABLE}` readiness metric should be documented"
+            operations_docs.contains("GET /health"),
+            "the liveness endpoint should be documented"
         );
         assert!(
-            operations_docs.contains("non-zero servable-peer gauge"),
-            "readiness semantics should be documented"
+            operations_docs.contains("GET /ready"),
+            "the readiness endpoint should be documented"
+        );
+        assert!(
+            operations_docs.contains("ready_threshold"),
+            "readiness semantics should reference the per-zone peer threshold"
         );
     }
 }

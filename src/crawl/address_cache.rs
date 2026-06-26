@@ -8,10 +8,11 @@ use zebra_chain::parameters::Network;
 use zebra_network::{AddressBook, PeerSocketAddr};
 
 use crate::{
+    config::ZcashNetwork,
     crawl::servability::{UnservableReason, classify_peer},
     metrics::{
-        ADDR_FAMILY_IPV4, ADDR_FAMILY_IPV6, LABEL_ADDR_FAMILY, LABEL_REASON, MUTEX_POISONING_TOTAL,
-        PEERS_KNOWN, PEERS_SERVABLE, PEERS_UNSERVABLE,
+        ADDR_FAMILY_IPV4, ADDR_FAMILY_IPV6, LABEL_ADDR_FAMILY, LABEL_NETWORK, LABEL_REASON,
+        MUTEX_POISONING_TOTAL, PEERS_KNOWN, PEERS_SERVABLE, PEERS_UNSERVABLE,
     },
 };
 
@@ -36,12 +37,22 @@ pub(crate) struct ServablePeers {
     pub(crate) ipv6: Arc<[PeerSocketAddr]>,
 }
 
-/// Spawns the background task that refreshes the served-address cache.
+impl ServablePeers {
+    /// Total servable peers across both address families.
+    pub(crate) fn total(&self) -> usize {
+        self.ipv4.len() + self.ipv6.len()
+    }
+}
+
+/// Spawns the background task that refreshes one network's served-address cache.
 pub(crate) fn spawn(
     address_book: Arc<std::sync::Mutex<AddressBook>>,
-    network: Network,
+    network: ZcashNetwork,
 ) -> watch::Receiver<ServablePeers> {
     let (servable_peers_sender, servable_peers_receiver) = watch::channel(ServablePeers::default());
+
+    let zcash_network = network.to_zebra();
+    let network_label = network.label();
 
     tokio::spawn(async move {
         let mut refresh_count = 0u64;
@@ -56,13 +67,15 @@ pub(crate) fn spawn(
                     Ok(guard) => guard,
                     Err(poisoned) => {
                         tracing::error!(
+                            network = network_label,
                             "address book mutex poisoned during cache update, recovering"
                         );
-                        counter!(MUTEX_POISONING_TOTAL).increment(1);
+                        counter!(MUTEX_POISONING_TOTAL, LABEL_NETWORK => network_label)
+                            .increment(1);
                         poisoned.into_inner()
                     }
                 };
-                servable_peers(&guard, &network, should_log_status)
+                servable_peers(&guard, &zcash_network, network_label, should_log_status)
             };
 
             if servable_peers_sender.send(servable_peers).is_err() {
@@ -85,7 +98,12 @@ pub(crate) fn spawn(
     clippy::cast_precision_loss,
     reason = "gauge values are peer counts; f64 precision loss is irrelevant"
 )]
-fn servable_peers(book: &AddressBook, network: &Network, should_log_status: bool) -> ServablePeers {
+fn servable_peers(
+    book: &AddressBook,
+    network: &Network,
+    network_label: &'static str,
+    should_log_status: bool,
+) -> ServablePeers {
     let now = Utc::now();
 
     let mut ipv4 = Vec::new();
@@ -106,16 +124,19 @@ fn servable_peers(book: &AddressBook, network: &Network, should_log_status: bool
         }
     }
 
-    gauge!(PEERS_KNOWN).set(book.len() as f64);
-    gauge!(PEERS_SERVABLE, LABEL_ADDR_FAMILY => ADDR_FAMILY_IPV4).set(ipv4.len() as f64);
-    gauge!(PEERS_SERVABLE, LABEL_ADDR_FAMILY => ADDR_FAMILY_IPV6).set(ipv6.len() as f64);
+    gauge!(PEERS_KNOWN, LABEL_NETWORK => network_label).set(book.len() as f64);
+    gauge!(PEERS_SERVABLE, LABEL_NETWORK => network_label, LABEL_ADDR_FAMILY => ADDR_FAMILY_IPV4)
+        .set(ipv4.len() as f64);
+    gauge!(PEERS_SERVABLE, LABEL_NETWORK => network_label, LABEL_ADDR_FAMILY => ADDR_FAMILY_IPV6)
+        .set(ipv6.len() as f64);
     for reason in UnservableReason::ALL {
-        gauge!(PEERS_UNSERVABLE, LABEL_REASON => reason.label())
+        gauge!(PEERS_UNSERVABLE, LABEL_NETWORK => network_label, LABEL_REASON => reason.label())
             .set(unservable.get(&reason).copied().unwrap_or(0) as f64);
     }
 
     if should_log_status {
         tracing::info!(
+            network = network_label,
             total = book.len(),
             servable_v4 = ipv4.len(),
             servable_v6 = ipv6.len(),
@@ -196,7 +217,7 @@ mod tests {
         book.update(MetaAddr::new_initial_peer(peer([1, 2, 3, 4], 8233)));
         assert_eq!(book.len(), 1, "the peer should be in the book");
 
-        let peers = servable_peers(&book, &Network::Mainnet, false);
+        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "never-handshaked peers must not be served"
@@ -214,7 +235,7 @@ mod tests {
             false,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, false);
+        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
         let served: Vec<IpAddr> = peers.ipv4.iter().map(|p| p.ip()).collect();
         assert_eq!(served, vec![IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))]);
     }
@@ -229,7 +250,7 @@ mod tests {
             false,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, false);
+        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "a recently-live non-full-node peer must not be served"
@@ -246,7 +267,7 @@ mod tests {
             true,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, false);
+        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "an inbound peer must not be served"
@@ -272,7 +293,7 @@ mod tests {
             "the peer should carry the sub-ban misbehavior score"
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, false);
+        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "a misbehaving peer must not be served"
@@ -291,7 +312,7 @@ mod tests {
             false,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, false);
+        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
         assert!(
             peers.ipv4.is_empty(),
             "peers on a non-default port must not be served"

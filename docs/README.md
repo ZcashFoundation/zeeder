@@ -11,9 +11,9 @@ Documentation for the Zcash DNS seeder.
 
 ## Start Here
 
-Operators should start with [Operations](operations.md). It explains how many
-Zeeder services to run, how to delegate DNS, how to deploy Docker or systemd
-services, and how to verify each authoritative nameserver.
+Operators should start with [Operations](operations.md). It explains how one
+process serves every network, how to delegate each zone's DNS, how to deploy
+Docker or systemd, and how to verify each authoritative nameserver.
 
 Developers should read [Architecture](architecture.md), then
 [Development](development.md). Code reviewers should start with
@@ -22,9 +22,9 @@ Developers should read [Architecture](architecture.md), then
 ## What Is Zeeder?
 
 A DNS seeder for Zcash that:
-- Crawls the network to discover healthy peers
-- Serves DNS A/AAAA records to clients
+- Crawls every configured network (mainnet, testnet) with an independent crawler each
+- Serves a DNS zone per network on one shared listener
 - Implements rate limiting to prevent DDoS abuse
-- Provides Prometheus metrics
+- Provides Prometheus metrics and a health endpoint
 
 Built with Rust using `zebra-network` and Hickory DNS.

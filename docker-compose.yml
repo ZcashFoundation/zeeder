@@ -5,19 +5,24 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      # Host DNS port 53 maps to the container's non-root DNS port.
+      # Host DNS port 53 maps to the container's non-root DNS port. One process
+      # serves both the mainnet and testnet zones on this single listener.
       - "53:1053/udp"
       - "53:1053/tcp"
       - "9999:9999/tcp"
+      - "8080:8080/tcp"
     volumes:
       - zeeder-cache:/cache
     environment:
-      - ZEEDER__CRAWLER__NETWORK=Testnet
       - ZEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053
-      - ZEEDER__DNS__DOMAIN=testnet.seeder.example.com
-      - ZEEDER__DNS__NAMESERVER=ns.seeder.example.com
-      - ZEEDER__DNS__TTL=600
+      - ZEEDER__ZONES__MAINNET__DOMAIN=mainnet.seeder.example.com
+      - ZEEDER__ZONES__MAINNET__NAMESERVER=ns-mainnet.seeder.example.com
+      - ZEEDER__ZONES__MAINNET__TTL=600
+      - ZEEDER__ZONES__TESTNET__DOMAIN=testnet.seeder.example.com
+      - ZEEDER__ZONES__TESTNET__NAMESERVER=ns-testnet.seeder.example.com
+      - ZEEDER__ZONES__TESTNET__TTL=300
       - ZEEDER__METRICS__ENDPOINT_ADDR=0.0.0.0:9999
+      - ZEEDER__HEALTH__ENDPOINT_ADDR=0.0.0.0:8080
 
 volumes:
   zeeder-cache:

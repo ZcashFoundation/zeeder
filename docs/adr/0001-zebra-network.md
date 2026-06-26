@@ -28,6 +28,10 @@ Use the `zebra-network` crate instead of implementing custom P2P networking.
 - Dependency on zebra-network versions
 - Must track Zebra releases for updates
 
+## Revision History
+
+- 2026-06-26: One process runs an independent `zebra_network::init` per served network (see ADR 0005). Each crawler keeps its state behind the values `init` returns; the composition root holds one peer-set handle per network for the process lifetime. Peer cache files are network-keyed, so concurrent crawlers do not collide.
+
 ## Alternatives Considered
 
 - Custom P2P implementation: rejected because it is too complex and has high bug risk

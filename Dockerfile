@@ -23,7 +23,8 @@ COPY --from=builder --chown=65532:65532 /app/cache /cache
 
 # 1053: DNS (UDP/TCP)
 # 9999: Metrics (TCP)
-EXPOSE 1053/udp 1053/tcp 9999/tcp
+# 8080: Health and readiness (TCP)
+EXPOSE 1053/udp 1053/tcp 9999/tcp 8080/tcp
 
 USER 65532:65532
 

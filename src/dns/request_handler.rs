@@ -1,4 +1,8 @@
 //! DNS request handling backed by the latest servable peer snapshot.
+//!
+//! One handler serves every configured zone on a single listener. Each query is
+//! routed to the zone whose domain contains the query name; names outside every
+//! zone are REFUSED.
 
 use std::net::IpAddr;
 
@@ -21,12 +25,13 @@ use tracing::{Instrument, info_span};
 use zebra_network::PeerSocketAddr;
 
 use crate::{
+    config::ZcashNetwork,
     crawl::address_cache::ServablePeers,
     dns::rate_limiter::RateLimiter,
     metrics::{
         DNS_ERRORS_TOTAL, DNS_QUERIES_TOTAL, DNS_RATE_LIMITED_TOTAL, DNS_RESPONSE_PEERS,
-        LABEL_RECORD_TYPE, RECORD_TYPE_A, RECORD_TYPE_AAAA, RECORD_TYPE_NS, RECORD_TYPE_OTHER,
-        RECORD_TYPE_SOA,
+        LABEL_NETWORK, LABEL_RECORD_TYPE, RECORD_TYPE_A, RECORD_TYPE_AAAA, RECORD_TYPE_NS,
+        RECORD_TYPE_OTHER, RECORD_TYPE_SOA,
     },
 };
 
@@ -35,20 +40,22 @@ const SOA_REFRESH_SECONDS: i32 = 3_600;
 const SOA_RETRY_SECONDS: i32 = 600;
 const SOA_EXPIRE_SECONDS: i32 = 86_400;
 
-/// Hickory request handler for the seed domain.
+/// Hickory request handler that routes each query to its matching seed zone.
 #[derive(Clone)]
 pub(crate) struct DnsRequestHandler {
-    servable_peers: watch::Receiver<ServablePeers>,
-    seed_zone: SeedZone,
+    zones: Vec<SeedZone>,
     rate_limiter: Option<RateLimiter>,
 }
 
-/// Parsed DNS zone served by the seeder.
+/// One network's served DNS zone: its static metadata plus a live feed of that
+/// network's servable peers.
 #[derive(Clone)]
 pub(crate) struct SeedZone {
+    network: ZcashNetwork,
     domain: LowerName,
     records: ZoneRecords,
     ttl: u32,
+    servable_peers: watch::Receiver<ServablePeers>,
 }
 
 #[derive(Clone)]
@@ -58,8 +65,15 @@ struct ZoneRecords {
 }
 
 impl SeedZone {
-    /// Parse the configured seed domain and static zone metadata.
-    pub(crate) fn new(seed_domain: &str, nameserver: &str, dns_ttl: u32) -> Result<Self> {
+    /// Parse a zone's domain and static metadata, binding it to the network's
+    /// live servable-peer feed.
+    pub(crate) fn new(
+        network: ZcashNetwork,
+        seed_domain: &str,
+        nameserver: &str,
+        dns_ttl: u32,
+        servable_peers: watch::Receiver<ServablePeers>,
+    ) -> Result<Self> {
         let seed_domain = parse_absolute_name("seed domain", seed_domain)?;
         let nameserver_name = parse_absolute_name("nameserver", nameserver)?;
         let seed_domain_lower = LowerName::from(seed_domain.clone());
@@ -71,23 +85,34 @@ impl SeedZone {
         let records = ZoneRecords::new(seed_domain, nameserver_name, dns_ttl)?;
 
         Ok(Self {
+            network,
             domain: seed_domain_lower,
             records,
             ttl: dns_ttl,
+            servable_peers,
         })
     }
 
+    /// This zone's network paired with its live servable-peer feed, for the
+    /// health endpoint's readiness check.
+    pub(crate) fn readiness(&self) -> (ZcashNetwork, watch::Receiver<ServablePeers>) {
+        (self.network, self.servable_peers.clone())
+    }
+
+    /// Whether this zone is authoritative for `query_name`.
+    fn contains(&self, query_name: &LowerName) -> bool {
+        self.domain.zone_of(query_name)
+    }
+
+    /// Decide the answer for an in-zone query, reading this zone's peer feed.
     fn resolve_answer<'a>(
         &self,
         query_name: &LowerName,
         record_type: RecordType,
         servable_peers: &'a ServablePeers,
-    ) -> DnsAnswer<'a> {
-        if !self.domain.zone_of(query_name) {
-            return DnsAnswer::Refused;
-        }
+    ) -> ZoneAnswer<'a> {
         if query_name.num_labels() != self.domain.num_labels() {
-            return DnsAnswer::NoData;
+            return ZoneAnswer::NoData;
         }
 
         #[allow(
@@ -97,9 +122,55 @@ impl SeedZone {
         match record_type {
             RecordType::A => resolve_peer_answer(&servable_peers.ipv4),
             RecordType::AAAA => resolve_peer_answer(&servable_peers.ipv6),
-            RecordType::NS => DnsAnswer::Nameserver,
-            RecordType::SOA => DnsAnswer::StartOfAuthority,
-            _ => DnsAnswer::NoData,
+            RecordType::NS => ZoneAnswer::Nameserver,
+            RecordType::SOA => ZoneAnswer::StartOfAuthority,
+            _ => ZoneAnswer::NoData,
+        }
+    }
+
+    fn response_records_for_answer(
+        &self,
+        query_name: &LowerName,
+        answer: ZoneAnswer<'_>,
+    ) -> DnsResponseRecords {
+        match answer {
+            ZoneAnswer::NoData => DnsResponseRecords {
+                answer_records: Vec::new(),
+                soa_records: vec![self.records.soa.clone()],
+            },
+            ZoneAnswer::Nameserver => DnsResponseRecords {
+                answer_records: vec![self.records.nameserver.clone()],
+                soa_records: Vec::new(),
+            },
+            ZoneAnswer::StartOfAuthority => DnsResponseRecords {
+                answer_records: vec![self.records.soa.clone()],
+                soa_records: Vec::new(),
+            },
+            ZoneAnswer::PeerAddresses { peers } => {
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "histogram sample of a small peer count"
+                )]
+                histogram!(DNS_RESPONSE_PEERS, LABEL_NETWORK => self.network.label())
+                    .record(peers.len() as f64);
+
+                let answer_records = peers
+                    .iter()
+                    .copied()
+                    .map(|addr| {
+                        let rdata = match addr.ip() {
+                            IpAddr::V4(ipv4) => RData::A(hickory_proto::rr::rdata::A(ipv4)),
+                            IpAddr::V6(ipv6) => RData::AAAA(hickory_proto::rr::rdata::AAAA(ipv6)),
+                        };
+                        Record::from_rdata(query_name.clone().into(), self.ttl, rdata)
+                    })
+                    .collect();
+
+                DnsResponseRecords {
+                    answer_records,
+                    soa_records: Vec::new(),
+                }
+            }
         }
     }
 }
@@ -136,23 +207,28 @@ impl ZoneRecords {
 }
 
 impl DnsRequestHandler {
-    /// Build a DNS request handler using the latest servable peer snapshot.
-    pub(crate) fn new(
-        servable_peers: watch::Receiver<ServablePeers>,
-        seed_zone: SeedZone,
-        rate_limiter: Option<RateLimiter>,
-    ) -> Self {
+    /// Build a DNS request handler that serves `zones` behind a shared limiter.
+    pub(crate) fn new(zones: Vec<SeedZone>, rate_limiter: Option<RateLimiter>) -> Self {
         Self {
-            servable_peers,
-            seed_zone,
+            zones,
             rate_limiter,
         }
+    }
+
+    /// The most specific zone authoritative for `name`, if any.
+    ///
+    /// Configuration rejects overlapping zones, so at most one zone matches;
+    /// the longest-domain tie-break is a defensive belt-and-braces choice.
+    fn matching_zone(&self, name: &LowerName) -> Option<&SeedZone> {
+        self.zones
+            .iter()
+            .filter(|zone| zone.contains(name))
+            .max_by_key(|zone| zone.domain.num_labels())
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DnsAnswer<'a> {
-    Refused,
+enum ZoneAnswer<'a> {
     NoData,
     Nameserver,
     StartOfAuthority,
@@ -173,11 +249,11 @@ fn record_type_label(record_type: RecordType) -> &'static str {
     }
 }
 
-fn resolve_peer_answer(peers: &[PeerSocketAddr]) -> DnsAnswer<'_> {
+fn resolve_peer_answer(peers: &[PeerSocketAddr]) -> ZoneAnswer<'_> {
     if peers.is_empty() {
-        DnsAnswer::NoData
+        ZoneAnswer::NoData
     } else {
-        DnsAnswer::PeerAddresses { peers }
+        ZoneAnswer::PeerAddresses { peers }
     }
 }
 
@@ -239,12 +315,20 @@ impl DnsRequestHandler {
             )
             .increment(1);
 
-            {
-                let servable_peers = self.servable_peers.borrow().clone();
-                let answer = self
-                    .seed_zone
-                    .resolve_answer(name, record_type, &servable_peers);
-                self.response_records_for_answer(name, answer, &mut metadata)
+            #[allow(
+                clippy::option_if_let_else,
+                reason = "the no-match arm mutates response metadata, so a match keeps that side effect visible"
+            )]
+            match self.matching_zone(name) {
+                None => {
+                    metadata.response_code = ResponseCode::Refused;
+                    DnsResponseRecords::default()
+                }
+                Some(zone) => {
+                    let servable_peers = zone.servable_peers.borrow().clone();
+                    let answer = zone.resolve_answer(name, record_type, &servable_peers);
+                    zone.response_records_for_answer(name, answer)
+                }
             }
         } else {
             DnsResponseRecords::default()
@@ -270,56 +354,6 @@ impl DnsRequestHandler {
                     counts: HeaderCounts::default(),
                 })
             })
-    }
-
-    fn response_records_for_answer(
-        &self,
-        query_name: &LowerName,
-        answer: DnsAnswer<'_>,
-        metadata: &mut Metadata,
-    ) -> DnsResponseRecords {
-        match answer {
-            DnsAnswer::Refused => {
-                metadata.response_code = ResponseCode::Refused;
-                DnsResponseRecords::default()
-            }
-            DnsAnswer::NoData => DnsResponseRecords {
-                answer_records: Vec::new(),
-                soa_records: vec![self.seed_zone.records.soa.clone()],
-            },
-            DnsAnswer::Nameserver => DnsResponseRecords {
-                answer_records: vec![self.seed_zone.records.nameserver.clone()],
-                soa_records: Vec::new(),
-            },
-            DnsAnswer::StartOfAuthority => DnsResponseRecords {
-                answer_records: vec![self.seed_zone.records.soa.clone()],
-                soa_records: Vec::new(),
-            },
-            DnsAnswer::PeerAddresses { peers } => {
-                #[allow(
-                    clippy::cast_precision_loss,
-                    reason = "histogram sample of a small peer count"
-                )]
-                histogram!(DNS_RESPONSE_PEERS).record(peers.len() as f64);
-
-                let answer_records = peers
-                    .iter()
-                    .copied()
-                    .map(|addr| {
-                        let rdata = match addr.ip() {
-                            IpAddr::V4(ipv4) => RData::A(hickory_proto::rr::rdata::A(ipv4)),
-                            IpAddr::V6(ipv6) => RData::AAAA(hickory_proto::rr::rdata::AAAA(ipv6)),
-                        };
-                        Record::from_rdata(query_name.clone().into(), self.seed_zone.ttl, rdata)
-                    })
-                    .collect();
-
-                DnsResponseRecords {
-                    answer_records,
-                    soa_records: Vec::new(),
-                }
-            }
-        }
     }
 }
 
@@ -424,26 +458,28 @@ mod tests {
             .ok_or_else(|| color_eyre::eyre::eyre!("DNS handler did not send a response"))
     }
 
-    fn servable_peers_receiver(servable_peers: ServablePeers) -> watch::Receiver<ServablePeers> {
-        let (_sender, receiver) = watch::channel(servable_peers);
-        receiver
-    }
-
-    fn seed_zone(seed_domain: &str, dns_ttl: u32) -> color_eyre::Result<SeedZone> {
-        SeedZone::new(seed_domain, "ns.seeder.test", dns_ttl)
-    }
-
-    fn request_handler(
-        servable_peers: ServablePeers,
+    fn zone(
+        network: ZcashNetwork,
         seed_domain: &str,
-        dns_ttl: u32,
+        nameserver: &str,
+        servable_peers: ServablePeers,
+    ) -> color_eyre::Result<SeedZone> {
+        let (_sender, receiver) = watch::channel(servable_peers);
+        SeedZone::new(network, seed_domain, nameserver, 600, receiver)
+    }
+
+    fn single_zone_handler(
+        seed_domain: &str,
+        servable_peers: ServablePeers,
         rate_limiter: Option<RateLimiter>,
     ) -> color_eyre::Result<DnsRequestHandler> {
-        Ok(DnsRequestHandler::new(
-            servable_peers_receiver(servable_peers),
-            seed_zone(seed_domain, dns_ttl)?,
-            rate_limiter,
-        ))
+        let seed_zone = zone(
+            ZcashNetwork::Mainnet,
+            seed_domain,
+            "ns.seeder.test",
+            servable_peers,
+        )?;
+        Ok(DnsRequestHandler::new(vec![seed_zone], rate_limiter))
     }
 
     fn peer(ip: IpAddr) -> PeerSocketAddr {
@@ -464,13 +500,20 @@ mod tests {
         Ok(LowerName::from(Name::from_ascii(name)?))
     }
 
+    /// Resolve an answer for a single-zone setup, mirroring the old per-zone
+    /// unit-test seam now that routing lives in the handler.
     fn answer_for<'a>(
         seed_domain: &str,
         query_name: &str,
         record_type: RecordType,
         servable_peers: &'a ServablePeers,
-    ) -> color_eyre::Result<DnsAnswer<'a>> {
-        let seed_zone = seed_zone(seed_domain, 600)?;
+    ) -> color_eyre::Result<ZoneAnswer<'a>> {
+        let seed_zone = zone(
+            ZcashNetwork::Mainnet,
+            seed_domain,
+            "ns.seeder.test",
+            ServablePeers::default(),
+        )?;
         Ok(seed_zone.resolve_answer(&lower_name(query_name)?, record_type, servable_peers))
     }
 
@@ -486,7 +529,7 @@ mod tests {
 
         assert_eq!(
             answer,
-            DnsAnswer::PeerAddresses {
+            ZoneAnswer::PeerAddresses {
                 peers: servable_peers.ipv4.as_ref(),
             }
         );
@@ -503,7 +546,7 @@ mod tests {
             &servable_peers,
         )?;
 
-        assert_eq!(answer, DnsAnswer::NoData);
+        assert_eq!(answer, ZoneAnswer::NoData);
         Ok(())
     }
 
@@ -519,7 +562,7 @@ mod tests {
 
         assert_eq!(
             answer,
-            DnsAnswer::PeerAddresses {
+            ZoneAnswer::PeerAddresses {
                 peers: servable_peers.ipv4.as_ref(),
             }
         );
@@ -538,78 +581,9 @@ mod tests {
 
         assert_eq!(
             answer,
-            DnsAnswer::PeerAddresses {
+            ZoneAnswer::PeerAddresses {
                 peers: servable_peers.ipv4.as_ref(),
             }
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn refuses_queries_outside_seed_domain() -> TestResult {
-        let servable_peers = servable_peer_snapshot();
-        assert_eq!(
-            answer_for(
-                "mainnet.seeder.test",
-                "wrong.domain.test",
-                RecordType::A,
-                &servable_peers,
-            )?,
-            DnsAnswer::Refused
-        );
-        assert_eq!(
-            answer_for(
-                "mainnet.seeder.test",
-                "evilmainnet.seeder.test",
-                RecordType::A,
-                &servable_peers,
-            )?,
-            DnsAnswer::Refused
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn answers_nameserver_queries_for_seed_domain() -> TestResult {
-        let servable_peers = servable_peer_snapshot();
-        assert_eq!(
-            answer_for(
-                "mainnet.seeder.test",
-                "mainnet.seeder.test",
-                RecordType::NS,
-                &servable_peers,
-            )?,
-            DnsAnswer::Nameserver
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn answers_start_of_authority_queries_for_seed_domain() -> TestResult {
-        let servable_peers = servable_peer_snapshot();
-        assert_eq!(
-            answer_for(
-                "mainnet.seeder.test",
-                "mainnet.seeder.test",
-                RecordType::SOA,
-                &servable_peers,
-            )?,
-            DnsAnswer::StartOfAuthority
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn returns_no_data_for_unsupported_record_types() -> TestResult {
-        let servable_peers = servable_peer_snapshot();
-        assert_eq!(
-            answer_for(
-                "mainnet.seeder.test",
-                "mainnet.seeder.test",
-                RecordType::TXT,
-                &servable_peers,
-            )?,
-            DnsAnswer::NoData
         );
         Ok(())
     }
@@ -626,9 +600,64 @@ mod tests {
 
         assert_eq!(
             answer,
-            DnsAnswer::PeerAddresses {
+            ZoneAnswer::PeerAddresses {
                 peers: servable_peers.ipv6.as_ref(),
             }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn answers_nameserver_and_start_of_authority_for_seed_domain() -> TestResult {
+        let servable_peers = servable_peer_snapshot();
+        assert_eq!(
+            answer_for(
+                "mainnet.seeder.test",
+                "mainnet.seeder.test",
+                RecordType::NS,
+                &servable_peers,
+            )?,
+            ZoneAnswer::Nameserver
+        );
+        assert_eq!(
+            answer_for(
+                "mainnet.seeder.test",
+                "mainnet.seeder.test",
+                RecordType::SOA,
+                &servable_peers,
+            )?,
+            ZoneAnswer::StartOfAuthority
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn returns_no_data_for_unsupported_record_types() -> TestResult {
+        let servable_peers = servable_peer_snapshot();
+        assert_eq!(
+            answer_for(
+                "mainnet.seeder.test",
+                "mainnet.seeder.test",
+                RecordType::TXT,
+                &servable_peers,
+            )?,
+            ZoneAnswer::NoData
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn empty_apex_peer_families_return_no_data() -> TestResult {
+        let servable_peers = ServablePeers::default();
+
+        assert_eq!(
+            answer_for(
+                "mainnet.seeder.test",
+                "mainnet.seeder.test",
+                RecordType::A,
+                &servable_peers,
+            )?,
+            ZoneAnswer::NoData
         );
         Ok(())
     }
@@ -643,47 +672,25 @@ mod tests {
     }
 
     #[test]
-    fn empty_apex_peer_families_return_no_data() -> TestResult {
-        let servable_peers = ServablePeers::default();
-
-        assert_eq!(
-            answer_for(
-                "mainnet.seeder.test",
-                "mainnet.seeder.test",
-                RecordType::A,
-                &servable_peers,
-            )?,
-            DnsAnswer::NoData
-        );
-        assert_eq!(
-            answer_for(
-                "mainnet.seeder.test",
-                "mainnet.seeder.test",
-                RecordType::AAAA,
-                &servable_peers,
-            )?,
-            DnsAnswer::NoData
-        );
-        Ok(())
-    }
-
-    #[test]
     fn rejects_invalid_seed_domain() {
-        let result = SeedZone::new("not a domain", "ns.seeder.test", 600);
+        let result = zone(
+            ZcashNetwork::Mainnet,
+            "not a domain",
+            "ns.seeder.test",
+            ServablePeers::default(),
+        );
 
         assert!(result.is_err(), "invalid seed domain should fail startup");
     }
 
     #[test]
-    fn rejects_invalid_nameserver() {
-        let result = SeedZone::new("mainnet.seeder.test", "not a domain", 600);
-
-        assert!(result.is_err(), "invalid nameserver should fail startup");
-    }
-
-    #[test]
     fn rejects_in_zone_nameserver() {
-        let result = SeedZone::new("mainnet.seeder.test", "ns.mainnet.seeder.test", 600);
+        let result = zone(
+            ZcashNetwork::Mainnet,
+            "mainnet.seeder.test",
+            "ns.mainnet.seeder.test",
+            ServablePeers::default(),
+        );
 
         assert!(
             result.is_err(),
@@ -691,48 +698,78 @@ mod tests {
         );
     }
 
-    #[test]
-    fn builds_zone_records_for_seed_domain() -> TestResult {
-        let seed_zone = SeedZone::new("mainnet.seeder.test", "ns.seeder.test", 300)?;
-        let expected_domain = LowerName::from(Name::from_ascii("mainnet.seeder.test.")?);
-        let expected_nameserver = LowerName::from(Name::from_ascii("ns.seeder.test.")?);
+    #[tokio::test]
+    async fn refuses_queries_outside_every_zone() -> TestResult {
+        let handler = single_zone_handler("mainnet.seeder.test", ServablePeers::default(), None)?;
 
-        assert_eq!(
-            LowerName::from(seed_zone.records.soa.name.clone()),
-            expected_domain
-        );
-        assert_eq!(
-            LowerName::from(seed_zone.records.nameserver.name.clone()),
-            expected_domain
-        );
-        assert_eq!(seed_zone.records.soa.ttl, 300);
-        assert_eq!(seed_zone.records.nameserver.ttl, 300);
-        let RData::SOA(soa) = &seed_zone.records.soa.data else {
-            return Err(color_eyre::eyre::eyre!("expected SOA record"));
-        };
-        assert_eq!(LowerName::from(soa.mname.clone()), expected_nameserver);
-
-        let RData::NS(ns) = &seed_zone.records.nameserver.data else {
-            return Err(color_eyre::eyre::eyre!("expected NS record"));
-        };
-        assert_eq!(LowerName::from(ns.0.clone()), expected_nameserver);
+        for outside in ["wrong.domain.test", "evilmainnet.seeder.test"] {
+            let response = required_answer_message(&handler, outside, RecordType::A).await?;
+            assert_eq!(
+                response.metadata.response_code,
+                ResponseCode::Refused,
+                "{outside} is outside every zone and must be REFUSED"
+            );
+        }
         Ok(())
     }
 
-    #[test]
-    fn refused_answers_set_refused_response_code() -> TestResult {
-        let handler = request_handler(ServablePeers::default(), "mainnet.seeder.test", 600, None)?;
-        let mut metadata = Metadata::new(0, MessageType::Response, OpCode::Query);
+    #[tokio::test]
+    async fn routes_each_query_to_its_own_network_zone() -> TestResult {
+        let mainnet_v4 = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let testnet_v4 = IpAddr::V4(Ipv4Addr::new(2, 2, 2, 2));
 
-        let response_records = handler.response_records_for_answer(
-            &lower_name("wrong.domain.test")?,
-            DnsAnswer::Refused,
-            &mut metadata,
+        let mainnet_zone = zone(
+            ZcashNetwork::Mainnet,
+            "mainnet.seeder.test",
+            "ns-mainnet.seeder.test",
+            ServablePeers {
+                ipv4: vec![peer(mainnet_v4)].into(),
+                ipv6: Arc::default(),
+            },
+        )?;
+        let testnet_zone = zone(
+            ZcashNetwork::Testnet,
+            "testnet.seeder.test",
+            "ns-testnet.seeder.test",
+            ServablePeers {
+                ipv4: vec![peer(testnet_v4)].into(),
+                ipv6: Arc::default(),
+            },
+        )?;
+        let handler = DnsRequestHandler::new(vec![mainnet_zone, testnet_zone], None);
+
+        let mainnet =
+            required_answer_message(&handler, "mainnet.seeder.test", RecordType::A).await?;
+        let mainnet_ips: HashSet<IpAddr> = mainnet
+            .answers
+            .iter()
+            .filter_map(|record| record.data.ip_addr())
+            .collect();
+        assert_eq!(
+            mainnet_ips,
+            HashSet::from([mainnet_v4]),
+            "the mainnet zone must answer only mainnet peers"
         );
 
-        assert_eq!(metadata.response_code, ResponseCode::Refused);
-        assert!(response_records.answer_records.is_empty());
-        assert!(response_records.soa_records.is_empty());
+        let testnet =
+            required_answer_message(&handler, "testnet.seeder.test", RecordType::A).await?;
+        let testnet_ips: HashSet<IpAddr> = testnet
+            .answers
+            .iter()
+            .filter_map(|record| record.data.ip_addr())
+            .collect();
+        assert_eq!(
+            testnet_ips,
+            HashSet::from([testnet_v4]),
+            "the testnet zone must answer only testnet peers"
+        );
+
+        let other = required_answer_message(&handler, "other.example.com", RecordType::A).await?;
+        assert_eq!(
+            other.metadata.response_code,
+            ResponseCode::Refused,
+            "a name in neither zone must be REFUSED"
+        );
         Ok(())
     }
 
@@ -742,27 +779,26 @@ mod tests {
             queries_per_second: 1,
             burst_size: 2,
         })?;
-        let request_handler = request_handler(
-            ServablePeers::default(),
+        let handler = single_zone_handler(
             "mainnet.seeder.test",
-            600,
+            ServablePeers::default(),
             Some(rate_limiter),
         )?;
 
         assert!(
-            answer_message(&request_handler, "mainnet.seeder.test", RecordType::A)
+            answer_message(&handler, "mainnet.seeder.test", RecordType::A)
                 .await?
                 .is_some(),
             "first query should be answered"
         );
         assert!(
-            answer_message(&request_handler, "mainnet.seeder.test", RecordType::A)
+            answer_message(&handler, "mainnet.seeder.test", RecordType::A)
                 .await?
                 .is_some(),
             "second query should be answered"
         );
         assert!(
-            answer_message(&request_handler, "mainnet.seeder.test", RecordType::A)
+            answer_message(&handler, "mainnet.seeder.test", RecordType::A)
                 .await?
                 .is_none(),
             "third query should be silently dropped"
@@ -781,9 +817,8 @@ mod tests {
             ipv6: vec![peer(v6)].into(),
         };
 
-        let request_handler = request_handler(servable_peers, "mainnet.seeder.test", 600, None)?;
-        let a =
-            required_answer_message(&request_handler, "mainnet.seeder.test", RecordType::A).await?;
+        let handler = single_zone_handler("mainnet.seeder.test", servable_peers, None)?;
+        let a = required_answer_message(&handler, "mainnet.seeder.test", RecordType::A).await?;
         assert!(
             a.metadata.authoritative,
             "A response should be authoritative"
@@ -801,8 +836,7 @@ mod tests {
         );
 
         let aaaa =
-            required_answer_message(&request_handler, "mainnet.seeder.test", RecordType::AAAA)
-                .await?;
+            required_answer_message(&handler, "mainnet.seeder.test", RecordType::AAAA).await?;
         let got_v6: HashSet<IpAddr> = aaaa
             .answers
             .iter()
@@ -814,8 +848,7 @@ mod tests {
             "AAAA query should return exactly the cached IPv6 peers"
         );
 
-        let soa = required_answer_message(&request_handler, "mainnet.seeder.test", RecordType::SOA)
-            .await?;
+        let soa = required_answer_message(&handler, "mainnet.seeder.test", RecordType::SOA).await?;
         assert!(
             soa.answers
                 .iter()
@@ -823,8 +856,7 @@ mod tests {
             "SOA query should return an SOA record"
         );
 
-        let ns = required_answer_message(&request_handler, "mainnet.seeder.test", RecordType::NS)
-            .await?;
+        let ns = required_answer_message(&handler, "mainnet.seeder.test", RecordType::NS).await?;
         assert_eq!(ns.answers.len(), 1, "NS query should return one record");
         let expected_nameserver = LowerName::from(Name::from_ascii("ns.seeder.test.")?);
         let RData::NS(ns) = &ns.answers[0].data else {
@@ -833,8 +865,7 @@ mod tests {
         assert_eq!(LowerName::from(ns.0.clone()), expected_nameserver);
 
         let no_data =
-            required_answer_message(&request_handler, "node.mainnet.seeder.test", RecordType::A)
-                .await?;
+            required_answer_message(&handler, "node.mainnet.seeder.test", RecordType::A).await?;
         assert!(
             no_data.answers.is_empty(),
             "in-zone subdomain should not return peer records"
@@ -852,15 +883,10 @@ mod tests {
 
     #[tokio::test]
     async fn empty_exact_name_peer_family_includes_soa_authority() -> TestResult {
-        let servable_peers = ServablePeers {
-            ipv4: Vec::new().into(),
-            ipv6: Vec::new().into(),
-        };
-        let request_handler = request_handler(servable_peers, "mainnet.seeder.test", 600, None)?;
+        let handler = single_zone_handler("mainnet.seeder.test", ServablePeers::default(), None)?;
 
         let response =
-            required_answer_message(&request_handler, "mainnet.seeder.test", RecordType::AAAA)
-                .await?;
+            required_answer_message(&handler, "mainnet.seeder.test", RecordType::AAAA).await?;
 
         assert!(
             response.answers.is_empty(),

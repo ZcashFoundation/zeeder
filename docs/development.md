@@ -24,16 +24,17 @@ cargo build
 # Copy example environment file
 cp .env.example .env
 
-# Edit .env for testnet (uses port 1053 to avoid requiring root)
+# The example serves a mainnet and a testnet zone on port 1053 (unprivileged).
+# Each zone is keyed by network:
 # ZEEDER__DNS__LISTEN_ADDR="0.0.0.0:1053"
-# ZEEDER__CRAWLER__NETWORK="Testnet"
-# ZEEDER__DNS__DOMAIN="testnet.seeder.example.com"
-# ZEEDER__DNS__NAMESERVER="ns.seeder.example.com"
+# ZEEDER__ZONES__TESTNET__DOMAIN="testnet.seeder.example.com"
+# ZEEDER__ZONES__TESTNET__NAMESERVER="ns-testnet.seeder.example.com"
 
 # Run
 cargo run -- start
 
 # Test in another terminal
+dig @127.0.0.1 -p 1053 mainnet.seeder.example.com A
 dig @127.0.0.1 -p 1053 testnet.seeder.example.com A
 ```
 
@@ -50,6 +51,7 @@ zeeder/
 │   ├── dns.rs            # DNS-side module registration
 │   ├── dns/              # DNS request handling and rate limiting
 │   ├── seeder.rs         # Process composition and shutdown handling
+│   ├── health.rs         # Health and readiness HTTP endpoint
 │   └── metrics.rs        # Prometheus metrics setup
 ├── docs/                 # Documentation
 ├── Dockerfile            # Container image
@@ -79,17 +81,22 @@ zeeder/
 - Serde deserialization from env vars/TOML
 
 **Seeder (`seeder.rs`):**
-- `run()`: Main seeder initialization and shutdown select
+- `run()`: Composition root; spawns one crawler per network and the shared DNS server
+- `spawn_network_crawler()`: Per-network setup (chain tip, zebra-network init, cache, seed zone)
 
 **Crawl (`crawl/`):**
 - `SeederChainTip`: Protocol-version floor for zebra-network handshakes
 - `classify_peer()`: Peer servability predicate
-- `address_cache::spawn()`: Servable peer refresh loop and crawler monitoring
+- `address_cache::spawn()`: One network's servable peer refresh loop and crawler monitoring
 - `ServablePeers`: Shuffled, capped peer snapshot for DNS queries
 
 **DNS (`dns/`):**
-- `DnsRequestHandler`: DNS request handler (implements `RequestHandler`)
-- `RateLimiter`: Per-IP rate limiting
+- `DnsRequestHandler`: Routes each query to its matching zone (implements `RequestHandler`)
+- `SeedZone`: One network's zone metadata plus its servable-peer feed
+- `RateLimiter`: Per-IP rate limiting, shared across zones
+
+**Health (`health.rs`):**
+- `spawn()`: Liveness (`/health`) and per-zone readiness (`/ready`) endpoint
 
 **Commands (`commands.rs`):**
 - CLI structure with clap
@@ -296,9 +303,11 @@ docs: update deployment guide
 ### Adding New Configuration Parameter
 
 1. Add the field to the config struct that owns the setting in `src/config.rs`
-   (`DnsConfig`, `CrawlerConfig`, `MetricsConfig`, or `RateLimitConfig`):
+   (`DnsConfig`, `ZoneConfig`, `MetricsConfig`, `HealthConfig`, or
+   `RateLimitConfig`). Per-network settings belong on `ZoneConfig`; process-wide
+   settings belong on `DnsConfig` or a top-level struct:
 ```rust
-pub(crate) struct DnsConfig {
+pub(crate) struct ZoneConfig {
     // ...
     pub(crate) my_param: String,
 }

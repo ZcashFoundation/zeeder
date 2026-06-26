@@ -3,7 +3,7 @@
 [![Rust CI](https://github.com/zcashfoundation/zeeder/actions/workflows/ci.yml/badge.svg)](https://github.com/zcashfoundation/zeeder/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/zcashfoundation/zeeder/branch/main/graph/badge.svg)](https://codecov.io/gh/zcashfoundation/zeeder)
 
-A Rust-based DNS seeder for the Zcash network, mirroring patterns from the [Zebra](https://github.com/zcashfoundation/zebra) project.
+A Rust-based DNS seeder for the Zcash network, mirroring patterns from the [Zebra](https://github.com/zcashfoundation/zebra) project. One process crawls every configured network and serves a DNS zone per network on a single listener.
 
 ## Status
 
@@ -16,11 +16,11 @@ cp .env.example .env
 cargo run -- start
 ```
 
-Verify DNS responses in another terminal:
+The example config serves both a mainnet and a testnet zone. Verify DNS responses in another terminal:
 
 ```bash
+dig @127.0.0.1 -p 1053 mainnet.seeder.example.com A
 dig @127.0.0.1 -p 1053 testnet.seeder.example.com A
-dig @127.0.0.1 -p 1053 testnet.seeder.example.com AAAA
 dig @127.0.0.1 -p 1053 testnet.seeder.example.com SOA
 ```
 
