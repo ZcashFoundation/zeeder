@@ -144,6 +144,7 @@ mod tests {
             "docs/architecture.md",
             "docs/development.md",
             "docs/operations.md",
+            "docs/network-upgrades.md",
             "docs/adr/0001-zebra-network.md",
             "docs/adr/0002-hickory-dns.md",
             "docs/adr/0003-rate-limiting.md",

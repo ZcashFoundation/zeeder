@@ -372,6 +372,9 @@ RUST_LOG=zeeder::dns::request_handler=debug cargo run -- start
 
 ## Release Process
 
+A release triggered by a Zebra network upgrade starts from the
+[network upgrade runbook](network-upgrades.md).
+
 1. **Update version** in `Cargo.toml`
 2. **Run checks**: `./commit_checks.sh`
 3. **Commit**: `git commit -m "chore: release v1.2.3"`

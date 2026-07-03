@@ -664,6 +664,10 @@ docker build -t zeeder .
 docker compose -f compose.yml up -d
 ```
 
+A Zebra network-upgrade release needs nothing beyond replacing the binary or
+image. The [network upgrade runbook](network-upgrades.md) covers verification
+and the expected servable-peer dip.
+
 ### Cache Persistence
 
 - The systemd unit above sets `XDG_CACHE_HOME=/var/cache/zeeder`, so the peer
