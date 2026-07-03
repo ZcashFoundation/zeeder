@@ -7,7 +7,12 @@ A Rust-based DNS seeder for the Zcash network, mirroring patterns from the [Zebr
 
 ## Status
 
-**Current State**: Pre-release. Internal refactor and validation in progress.
+**Current State**: Released. Zeeder runs the Zcash Foundation's production
+seeders and supersedes the CoreDNS-based
+[dnsseeder](https://github.com/ZcashFoundation/dnsseeder) plugin and its
+[coredns-zcash](https://github.com/ZcashFoundation/coredns-zcash) deployment
+harness. Images are published to
+[zfnd/dnsseeder](https://hub.docker.com/r/zfnd/dnsseeder).
 
 ## Quickstart
 
