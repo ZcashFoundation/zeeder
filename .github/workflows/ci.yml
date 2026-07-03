@@ -36,6 +36,15 @@ jobs:
     - name: Build
       run: cargo build --verbose
 
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build Docker image
+      run: docker build .
+
   # Code Coverage Job
   coverage:
     runs-on: ubuntu-latest

@@ -375,13 +375,32 @@ RUST_LOG=zeeder::dns::request_handler=debug cargo run -- start
 A release triggered by a Zebra network upgrade starts from the
 [network upgrade runbook](network-upgrades.md).
 
-1. **Update version** in `Cargo.toml`
+1. **Update version** in `Cargo.toml` and refresh `Cargo.lock` (`cargo build`)
 2. **Run checks**: `./commit_checks.sh`
-3. **Commit**: `git commit -m "chore: release v1.2.3"`
-4. **Tag**: `git tag -a v1.2.3 -m "Release v1.2.3"`
-5. **Push**: `git push && git push --tags`
-6. **Build release**: `cargo build --release`
-7. **Create GitHub release** with binaries
+3. **Merge**: land the release commit on `main` (`chore: release v1.2.3`)
+4. **Create a GitHub release** with tag `v1.2.3` targeting `main`
+
+The `Release` workflow (`.github/workflows/release.yml`) publishes everything
+else. It fails fast when the tag does not match the `Cargo.toml` version, then:
+
+- Publishes `zfnd/dnsseeder:1.2.3` and `zfnd/dnsseeder:latest` to Docker Hub
+  as one multi-arch image (`linux/amd64`, `linux/arm64`), signed with Cosign
+  and carrying build-provenance and SBOM attestations.
+- Attaches `zeeder` archives for `x86_64` and `aarch64` Linux to the GitHub
+  release, with per-file checksums, a `SHA256SUMS` manifest, and a Sigstore
+  signature bundle over that manifest. Binaries are built on Ubuntu 22.04 for
+  a low glibc floor (Ubuntu 22.04+, Debian 12+, RHEL 9+); the workflow fails
+  if a build raises that floor.
+
+Pre-releases publish nothing. The workflow runs when a release is published as
+a full release, including a pre-release later promoted to one.
+
+Docker Hub publishing requires the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
+secrets in the `release` GitHub environment. Docker Hub has no OIDC federation,
+so use an organization access token scoped to Image Push on `zfnd/dnsseeder`
+with an expiration date, and rotate it when it expires. The image jobs run in
+the `release` environment, so protection rules added to that environment (such
+as required reviewers) gate publishing.
 
 ## Useful Resources
 

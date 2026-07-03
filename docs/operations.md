@@ -201,7 +201,7 @@ name: zeeder
 
 services:
   seeder:
-    image: zeeder
+    image: zfnd/dnsseeder
     restart: unless-stopped
     ports:
       - "53:1053/udp"
@@ -225,11 +225,17 @@ volumes:
   zeeder-cache:
 ```
 
-Build and start:
+Pull and start:
+
+```bash
+docker compose -f compose.yml pull
+docker compose -f compose.yml up -d
+```
+
+To run an unreleased build, build the image locally and point `image:` at it:
 
 ```bash
 docker build -t zeeder .
-docker compose -f compose.yml up -d
 ```
 
 Verify the container:
@@ -245,6 +251,20 @@ curl -s http://127.0.0.1:8080/ready
 One container crawls both networks, so it holds roughly twice the peer
 connections of a single-network process. The peer caches stay separate inside the
 shared volume because Zebra keeps them in per-network files.
+
+### Image Verification
+
+Release images are Cosign-signed and carry build-provenance and SBOM
+attestations. Verify a pulled image before trusting it:
+
+```bash
+cosign verify docker.io/zfnd/dnsseeder:latest \
+  --certificate-identity-regexp='^https://github\.com/ZcashFoundation/zeeder/\.github/workflows/release\.yml@' \
+  --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
+
+gh attestation verify oci://docker.io/zfnd/dnsseeder:latest \
+  --repo ZcashFoundation/zeeder
+```
 
 ## Bare Metal Deployment
 
@@ -262,7 +282,7 @@ sudo useradd --system --home /var/lib/zeeder --shell /usr/sbin/nologin zeeder
 sudo install -d -o zeeder -g zeeder /var/lib/zeeder
 sudo install -d -o root -g root /opt/zeeder /etc/zeeder
 
-git clone https://github.com/ZcashFoundation/dnsseederNG zeeder
+git clone https://github.com/ZcashFoundation/zeeder
 cd zeeder
 cargo build --release
 sudo install -m 0755 target/release/zeeder /opt/zeeder/zeeder
@@ -660,7 +680,7 @@ sudo systemctl start zeeder
 For Docker:
 
 ```bash
-docker build -t zeeder .
+docker compose -f compose.yml pull
 docker compose -f compose.yml up -d
 ```
 

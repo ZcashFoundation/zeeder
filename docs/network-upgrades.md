@@ -42,8 +42,8 @@ Trigger: a Zebra release sets an upgrade activation height for any network.
    value from the dependency.
 5. Fix any compile errors from Zebra API changes, and update docs whose
    statements the release invalidates.
-6. Release Zeeder following the [release process](development.md#release-process)
-   and publish the container image.
+6. Release Zeeder following the [release process](development.md#release-process).
+   The `Release` workflow publishes the Docker image and binaries.
 
 Ship promptly. Until the new Zeeder is deployed, seeders keep choosing peers
 by the old floor and may serve nodes that will not follow the upgraded chain.
