@@ -121,16 +121,16 @@ mod tests {
     }
 
     #[test]
-    fn readme_status_matches_unreleased_project_state() {
+    fn readme_status_matches_released_project_state() {
         let readme = include_str!("../README.md");
 
         assert!(
-            readme.contains("**Current State**: Pre-release."),
-            "README status should describe the project as pre-release"
+            readme.contains("**Current State**: Released."),
+            "README status should describe the project as released"
         );
         assert!(
-            !readme.contains("Ready for production testing"),
-            "README should not claim production-testing readiness before release"
+            !readme.contains("Pre-release"),
+            "README should not describe the project as pre-release"
         );
     }
 

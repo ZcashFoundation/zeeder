@@ -383,9 +383,11 @@ A release triggered by a Zebra network upgrade starts from the
 The `Release` workflow (`.github/workflows/release.yml`) publishes everything
 else. It fails fast when the tag does not match the `Cargo.toml` version, then:
 
-- Publishes `zfnd/dnsseeder:1.2.3` and `zfnd/dnsseeder:latest` to Docker Hub
-  as one multi-arch image (`linux/amd64`, `linux/arm64`), signed with Cosign
-  and carrying build-provenance and SBOM attestations.
+- Publishes the release to Docker Hub as one multi-arch image (`linux/amd64`,
+  `linux/arm64`) tagged `zfnd/dnsseeder:1.2.3`, `zfnd/dnsseeder:v1.2.3`, and
+  `zfnd/dnsseeder:latest`, signed with Cosign and carrying build-provenance
+  and SBOM attestations. All tags share one digest, so verification commands
+  work against any of them.
 - Attaches `zeeder` archives for `x86_64` and `aarch64` Linux to the GitHub
   release, with per-file checksums, a `SHA256SUMS` manifest, and a Sigstore
   signature bundle over that manifest. Binaries are built on Ubuntu 22.04 for

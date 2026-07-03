@@ -138,9 +138,12 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 #v6.2.0
         with:
           images: ${{ env.HUB_IMAGE }}
+          # Each release is tagged in both styles (`1.4.0` and `v1.4.0`): bare
+          # is the Docker norm, v-prefixed continues the existing tag line.
           # `latest` is added automatically for stable semver, never for pre-releases.
           tags: |
             type=semver,pattern={{version}}
+            type=semver,pattern={{raw}}
 
       - name: Login to Docker Hub
         uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 #v4.3.0
