@@ -32,7 +32,7 @@ Rate-limited packets increment `zeeder_dns_rate_limited_total`.
 
 The protocol-version floor is the minimum peer protocol version zebra-network accepts during handshake. zeeder does not store peer protocol versions itself. Instead, each network's `SeederChainTip` pins zebra-network to that network's current activation height so outdated peers fail handshake before they can become servable.
 
-The floor is reported per network through `zeeder_min_protocol_version` with a `network` label. Network-upgrade changes should update the chain-tip tests and ADR 0004.
+The floor is reported per network through `zeeder_min_protocol_version` with a `network` label. A Zebra release that activates a network upgrade is handled through the runbook in `docs/network-upgrades.md`.
 
 ## Contract Homes
 

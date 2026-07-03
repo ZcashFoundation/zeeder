@@ -6,6 +6,7 @@ Documentation for the Zcash DNS seeder.
 
 - **[Architecture](architecture.md)** - System design, components, and key decisions (ADRs)
 - **[Operations](operations.md)** - Production topology, DNS delegation, deployment, monitoring, and troubleshooting
+- **[Network Upgrades](network-upgrades.md)** - Runbook for each Zebra release that activates a network upgrade
 - **[Development](development.md)** - Contributing and development guide
 - **[Context](../CONTEXT.md)** - Glossary for load-bearing project terms
 
