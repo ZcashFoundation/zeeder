@@ -96,6 +96,15 @@ mod tests {
     }
 
     #[test]
+    fn testnet_floor_is_the_current_network_upgrade() {
+        // Pins the floor so a zebra bump that activates the next upgrade trips here.
+        assert_eq!(
+            version_floor(&Network::new_default_testnet()),
+            Version(170_160)
+        );
+    }
+
+    #[test]
     fn chain_tip_does_not_lower_no_chain_tip_fallback() {
         // Zebra's no-tip fallback can already match the current upgrade floor.
         // The fixed tip must never lower it, and still lets future activation
