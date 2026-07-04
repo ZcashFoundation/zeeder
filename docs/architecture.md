@@ -288,6 +288,7 @@ It reads each zone's servable-peer feed directly, so readiness reflects live cra
 - [ADR 0003: Implement Per-IP Rate Limiting](adr/0003-rate-limiting.md)
 - [ADR 0004: Peer Servability and Protocol-Version Floor](adr/0004-peer-servability.md)
 - [ADR 0005: Multi-Network Serving Topology](adr/0005-multi-network-topology.md)
+- [ADR 0006: Image Identity and Fleet Delivery](adr/0006-image-identity-and-fleet-delivery.md)
 
 ## Design Principles
 

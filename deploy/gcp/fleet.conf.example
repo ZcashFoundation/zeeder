@@ -1,0 +1,17 @@
+PROJECT=my-gcp-project
+MACHINE_TYPE=e2-micro
+DISK_SIZE=10
+IMAGE_FAMILY=cos-stable
+IMAGE_PROJECT=cos-cloud
+NETWORK_TAG=seeder
+SERVICE_ACCOUNT=seeder-vms@my-gcp-project.iam.gserviceaccount.com
+GATE_TRIES=15
+GATE_SLEEP=12
+MAINNET_DOMAIN=mainnet.seeder.zfnd.org
+TESTNET_DOMAIN=testnet.seeder.zfnd.org
+
+# Array order is rolling order: canary first, ns1 last.
+SEEDERS=(
+  "seeder-2|us-east1-b|us-east1|ns2"
+  "seeder-1|us-central1-a|us-central1|ns1"
+)

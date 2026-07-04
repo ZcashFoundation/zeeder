@@ -358,6 +358,83 @@ One unit serves every configured network. The crawlers write per-network peer
 caches under `XDG_CACHE_HOME/zebra/network/` (for example `mainnet.peers` and
 `testnet.peers`), so they share the cache directory without colliding.
 
+## GCP Fleet
+
+The Zcash Foundation runs Zeeder as six authoritative nameservers on
+Container-Optimized OS VMs. This section documents that production fleet: its
+topology, its privilege model, and the roll that ships a new image without
+dropping a delegation.
+
+### Topology
+
+The fleet is six authoritative nameservers on Container-Optimized OS VMs, one per
+region across the United States and Europe. Each VM holds a reserved static
+external IP. The parent zone publishes those IPs as `ns1.zfnd.org` through
+`ns6.zfnd.org` and NS-delegates `mainnet.seeder.zfnd.org` and
+`testnet.seeder.zfnd.org` to them. The delegation records are managed outside
+this repository.
+
+The fleet inventory (project, VM names, zones) lives in `deploy/gcp/fleet.conf`,
+which is not committed; `deploy/gcp/fleet.conf.example` documents its shape.
+
+### Privilege Model
+
+Zeeder runs non-root as uid `65532` and listens on `:1053`. The host startup
+script stops `systemd-resolved` and redirects `:53` to `:1053` for both UDP and
+TCP with iptables. The script re-runs on every boot, so the redirect is
+re-established after each reboot without manual repair.
+
+### Roll Constraints
+
+A roll updates one VM at a time. Before it moves to the next VM, it digs both
+zones over UDP and TCP against the VM it just updated and aborts on the first
+failed gate. `ns1` is the oldest VM and rolls last. Because the roll stops at the
+first failure, a bad image reaches at most one nameserver while the other five
+keep answering.
+
+### Deploying a New Image
+
+1. `release.yml` publishes a Cosign-signed image and its `sha256` digest.
+2. A pull request bumps `deploy/gcp/IMAGE` to that digest. The merge is the
+   deploy event, and the file's git history is the audit trail.
+3. An operator runs `deploy/gcp/seeders.sh --roll`. Add `--only <ns>` to roll the
+   canary alone, and `--dry-run` to preview the plan without touching a VM.
+4. The roll runs `cosign verify` on the pinned digest before it touches any VM,
+   so an unsigned or mismatched digest never rolls.
+5. `deploy/gcp/seeders.sh --status` is the post-roll check.
+
+Rollback is a `git revert` of `deploy/gcp/IMAGE` followed by another
+`--roll`.
+
+### Image Pull Path
+
+The VMs pull the pinned digest from Docker Hub. During a Docker Hub outage,
+`mirror.gcr.io` is the break-glass pull path. A dedicated Artifact Registry
+remote repository is the planned primary path.
+
+Verify the fleet image with the commands in
+[Image Verification](#image-verification), substituting `$(cat deploy/gcp/IMAGE)`
+for the tagged reference.
+
+### Fleet container environment
+
+```env
+ZEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053
+ZEEDER__ZONES__MAINNET__DOMAIN=mainnet.seeder.zfnd.org
+ZEEDER__ZONES__MAINNET__NAMESERVER=<ns>.zfnd.org
+ZEEDER__ZONES__MAINNET__TTL=600
+ZEEDER__ZONES__TESTNET__DOMAIN=testnet.seeder.zfnd.org
+ZEEDER__ZONES__TESTNET__NAMESERVER=<ns>.zfnd.org
+ZEEDER__ZONES__TESTNET__TTL=300
+ZEEDER__METRICS__ENDPOINT_ADDR=127.0.0.1:9999
+ZEEDER__HEALTH__ENDPOINT_ADDR=127.0.0.1:8080
+ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND=50
+ZEEDER__RATE_LIMIT__BURST_SIZE=100
+```
+
+Each VM substitutes its own nameserver (`ns1` through `ns6`) for `<ns>`; the
+nameserver is out-of-zone by design.
+
 ## DNS Setup
 
 Configure DNS in the parent zone that owns your seed domains. The parent zone
