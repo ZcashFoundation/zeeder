@@ -185,8 +185,11 @@ firewall_ok() {
 
 audit_vm() {
   local name="$1" zone="$2" region="$3" ns="$4" want status ip reserved sa deletion label konlet
-  IFS=$'\t' read -r status ip sa deletion label < <(vm "${name}" "${zone}" \
-    'value(status, networkInterfaces[0].accessConfigs[0].natIP, serviceAccounts[0].email, deletionProtection, labels.zeeder-digest)') || true
+  # Semicolon-separated, not tab: `read` with an IFS-whitespace delimiter (tab)
+  # collapses consecutive separators, so an empty middle field (e.g. a missing
+  # NAT IP) would shift every later field. `;` never appears in these values.
+  IFS=';' read -r status ip sa deletion label < <(vm "${name}" "${zone}" \
+    "csv[no-heading,separator=';'](status, networkInterfaces[0].accessConfigs[0].natIP, serviceAccounts[0].email, deletionProtection, labels.zeeder-digest)") || true
   reserved="$(addr "${name}" "${region}")"
   if [ "${AUDIT_SCOPE}" = full ]; then
     want="$(digest_short)"
@@ -267,8 +270,10 @@ show_status() {
   printf '%-24s %-15s %-10s %-26s %-12s %-12s\n' "name(ns)" "IP" "VM" "digest" "main u/t" "test u/t"
   for row in "${SEEDERS[@]}"; do
     IFS='|' read -r name zone region ns <<< "${row}"
-    IFS=$'\t' read -r ip status label < <(vm "${name}" "${zone}" \
-      'value(networkInterfaces[0].accessConfigs[0].natIP, status, labels.zeeder-digest)') || true
+    # Semicolon-separated, not tab: a tab (IFS-whitespace) delimiter drops empty
+    # middle fields under `read`, misaligning the row when a VM has no NAT IP.
+    IFS=';' read -r ip status label < <(vm "${name}" "${zone}" \
+      "csv[no-heading,separator=';'](networkInterfaces[0].accessConfigs[0].natIP, status, labels.zeeder-digest)") || true
     [ "${label}" = "${want}" ] && marker=match || marker=miss
     main_udp="$(dig_count "${ip}" "${MAINNET_DOMAIN}" udp)"
     main_tcp="$(dig_count "${ip}" "${MAINNET_DOMAIN}" tcp)"
