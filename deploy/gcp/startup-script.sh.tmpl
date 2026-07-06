@@ -12,7 +12,10 @@ iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 1053 \
 iptables -t nat -C PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 1053 \
   || iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 1053
 
-docker pull "${IMAGE_REF}"
+# Refresh the pinned digest when the registry is reachable, but tolerate a
+# transient outage: a reboot must still start the already-pinned local image.
+# `docker run` below still fails closed if the digest is absent locally too.
+docker pull "${IMAGE_REF}" || true
 docker rm -f zeeder 2>/dev/null || true
 docker run -d \
   --name zeeder \
