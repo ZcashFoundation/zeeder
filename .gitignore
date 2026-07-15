@@ -3,3 +3,4 @@
 cache/
 utils/
 docs/private/
+deploy/gcp/fleet.conf

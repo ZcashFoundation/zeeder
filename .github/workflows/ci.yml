@@ -45,6 +45,59 @@ jobs:
     - name: Build Docker image
       run: docker build .
 
+  deploy-gcp:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 #v7.0.0
+
+    - name: Shellcheck deploy scripts
+      run: |
+        set -euo pipefail
+        command -v shellcheck >/dev/null || {
+          echo "::error::shellcheck not found on PATH"
+          exit 1
+        }
+        shellcheck deploy/gcp/*.sh
+        bash -n deploy/gcp/seeders.sh
+        sed \
+          -e 's#__IMAGE_REF__#docker.io/zfnd/dnsseeder@sha256:1111111111111111111111111111111111111111111111111111111111111111#g' \
+          -e 's#__NAMESERVER__#ns1.zfnd.org#g' \
+          deploy/gcp/startup-script.sh.tmpl > /tmp/startup-script.sh
+        bash -n /tmp/startup-script.sh
+
+    - name: Check fleet environment docs
+      run: |
+        set -euo pipefail
+        docs_env=/tmp/docs-env
+        script_env=/tmp/script-env
+
+        awk '
+          $0 == "### Fleet container environment" { found_heading=1; in_section=1; next }
+          in_section && $0 == "```env" { found_block=1; in_block=1; next }
+          in_block && $0 == "```" { in_block=0; exit }
+          in_block && /^ZEEDER__/ { print; found_env=1; next }
+          in_section && /^### / { exit }
+          END {
+            if (!found_heading) {
+              print "::error::missing ### Fleet container environment heading in docs/operations.md" > "/dev/stderr"
+              exit 1
+            }
+            if (!found_block) {
+              print "::error::missing env block under ### Fleet container environment" > "/dev/stderr"
+              exit 1
+            }
+            if (!found_env) {
+              print "::error::env block under ### Fleet container environment has no ZEEDER__ assignments" > "/dev/stderr"
+              exit 1
+            }
+          }
+        ' docs/operations.md | sort > "${docs_env}"
+
+        grep -Eo 'ZEEDER__[A-Z0-9_]+=[^[:space:]\\]+' deploy/gcp/startup-script.sh.tmpl \
+          | sed 's#__NAMESERVER__#<ns>.zfnd.org#' | sort > "${script_env}"
+        diff -u "${docs_env}" "${script_env}"
+
   # Code Coverage Job
   coverage:
     runs-on: ubuntu-latest

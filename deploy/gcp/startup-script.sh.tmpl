@@ -1,0 +1,35 @@
+#!/bin/bash
+set -euo pipefail
+
+IMAGE_REF="__IMAGE_REF__"
+
+systemctl stop systemd-resolved || true
+printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' > /etc/resolv.conf
+
+# Keep boot reruns from accumulating duplicate DNS redirects.
+iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 1053 \
+  || iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 1053
+iptables -t nat -C PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 1053 \
+  || iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 1053
+
+# Refresh the pinned digest when the registry is reachable, but tolerate a
+# transient outage: a reboot must still start the already-pinned local image.
+# `docker run` below still fails closed if the digest is absent locally too.
+docker pull "${IMAGE_REF}" || true
+docker rm -f zeeder 2>/dev/null || true
+docker run -d \
+  --name zeeder \
+  --network host \
+  --restart always \
+  --env ZEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053 \
+  --env ZEEDER__ZONES__MAINNET__DOMAIN=mainnet.seeder.zfnd.org \
+  --env ZEEDER__ZONES__MAINNET__NAMESERVER=__NAMESERVER__ \
+  --env ZEEDER__ZONES__MAINNET__TTL=600 \
+  --env ZEEDER__ZONES__TESTNET__DOMAIN=testnet.seeder.zfnd.org \
+  --env ZEEDER__ZONES__TESTNET__NAMESERVER=__NAMESERVER__ \
+  --env ZEEDER__ZONES__TESTNET__TTL=300 \
+  --env ZEEDER__METRICS__ENDPOINT_ADDR=127.0.0.1:9999 \
+  --env ZEEDER__HEALTH__ENDPOINT_ADDR=127.0.0.1:8080 \
+  --env ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND=50 \
+  --env ZEEDER__RATE_LIMIT__BURST_SIZE=100 \
+  "${IMAGE_REF}"

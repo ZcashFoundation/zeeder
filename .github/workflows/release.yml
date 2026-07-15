@@ -121,6 +121,8 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     timeout-minutes: 15
+    outputs:
+      digest: ${{ steps.create.outputs.digest }}
     permissions:
       contents: read
       id-token: write
@@ -213,6 +215,39 @@ jobs:
           gh attestation verify "oci://${HUB_IMAGE}@${DIGEST}" \
             --repo "${REPOSITORY}" \
             --signer-workflow "${REPOSITORY}/.github/workflows/release.yml"
+
+  propose-deploy:
+    name: Propose fleet image pin
+    needs: [preflight, publish-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 #v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Pin fleet image
+        env:
+          DIGEST: ${{ needs.publish-image.outputs.digest }}
+          HUB_IMAGE: ${{ env.HUB_IMAGE }}
+        run: |
+          set -euo pipefail
+          printf '%s@%s\n' "${HUB_IMAGE}" "${DIGEST}" > deploy/gcp/IMAGE
+
+      - name: Open deploy pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: deploy/image-${{ needs.preflight.outputs.version }}
+          title: "deploy: pin fleet to zeeder ${{ needs.preflight.outputs.version }}"
+          commit-message: "deploy: pin fleet to zeeder ${{ needs.preflight.outputs.version }}"
+          body: |
+            Pins the GCP fleet deployment image to zeeder ${{ needs.preflight.outputs.version }}.
+            Merging this PR remains a human deployment decision.
+          add-paths: deploy/gcp/IMAGE
+          delete-branch: true
 
   build-binaries:
     name: Build binary (${{ matrix.target }})
