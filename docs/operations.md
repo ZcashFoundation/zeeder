@@ -382,7 +382,10 @@ which is not committed; `deploy/gcp/fleet.conf.example` documents its shape.
 Zeeder runs non-root as uid `65532` and listens on `:1053`. The host startup
 script stops `systemd-resolved` and redirects `:53` to `:1053` for both UDP and
 TCP with iptables. The script re-runs on every boot, so the redirect is
-re-established after each reboot without manual repair.
+re-established after each reboot without manual repair. It also mounts
+`/var/lib/zeeder/cache` (owned by uid `65532`) at the container's `/cache`, so
+zebra-network's per-network peer caches survive container recreation and a
+reset/reboot/roll resumes the crawler from its last known peers instead of cold.
 
 ### Roll Constraints
 
