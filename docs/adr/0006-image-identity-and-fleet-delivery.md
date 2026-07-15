@@ -55,9 +55,12 @@ inventory is operator-held:
 - `seeders.sh` is mechanism only: `roll`, `create`, `status`, `audit`, and
   `dns`, each with a dry-run.
 
-Rolls proceed one VM at a time. Each step is dig-gated on both zones and aborts
-on the first failure, so a bad image stops at the canary while the other five
-nameservers keep answering. `cosign verify` against the release workflow's OIDC
+Rolls proceed one VM at a time. Each step is dig-gated on both zones over UDP and
+TCP: mainnet is hard-gated and aborts the roll on failure, while testnet is
+soft-gated and only warns (the NU6.3 protocol floor makes testnet servability
+network-dependent, so a freshly reset crawler may briefly serve `servable=0` while
+mainnet is healthy). A bad image therefore stops at the canary on mainnet failure
+while the other five nameservers keep answering. `cosign verify` against the release workflow's OIDC
 identity gates every roll and fails closed, so only a release-signed digest ever
 reaches production.
 

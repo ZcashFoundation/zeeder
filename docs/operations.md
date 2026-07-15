@@ -387,10 +387,14 @@ re-established after each reboot without manual repair.
 ### Roll Constraints
 
 A roll updates one VM at a time. Before it moves to the next VM, it digs both
-zones over UDP and TCP against the VM it just updated and aborts on the first
-failed gate. `ns1` is the oldest VM and rolls last. Because the roll stops at the
-first failure, a bad image reaches at most one nameserver while the other five
-keep answering.
+zones over UDP and TCP against the VM it just updated. Mainnet is hard-gated: if
+the node is not serving mainnet over both UDP and TCP the roll aborts. Testnet is
+soft-gated: because the NU6.3 protocol floor makes testnet servability
+network-dependent, a freshly reset crawler can sit at `servable=0` for a while
+while mainnet is healthy, so a cold testnet only warns and the roll continues.
+`ns1` is the oldest VM and rolls last. Because the roll stops at the first mainnet
+failure, a bad image reaches at most one nameserver while the other five keep
+answering.
 
 ### Deploying a New Image
 
