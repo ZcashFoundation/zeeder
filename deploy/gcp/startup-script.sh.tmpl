@@ -12,6 +12,13 @@ iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 1053 \
 iptables -t nat -C PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 1053 \
   || iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 1053
 
+# Persist zebra-network's peer cache across container recreation. The image sets
+# XDG_CACHE_HOME=/cache (owned by the non-root UID 65532), so mounting a host dir
+# there lets a reset/reboot/roll resume the crawler from its last known peers
+# instead of starting cold and rediscovering the network from the DNS seeds.
+mkdir -p /var/lib/zeeder/cache
+chown 65532:65532 /var/lib/zeeder/cache
+
 # Refresh the pinned digest when the registry is reachable, but tolerate a
 # transient outage: a reboot must still start the already-pinned local image.
 # `docker run` below still fails closed if the digest is absent locally too.
@@ -21,6 +28,7 @@ docker run -d \
   --name zeeder \
   --network host \
   --restart always \
+  --volume /var/lib/zeeder/cache:/cache \
   --env ZEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053 \
   --env ZEEDER__ZONES__MAINNET__DOMAIN=mainnet.seeder.zfnd.org \
   --env ZEEDER__ZONES__MAINNET__NAMESERVER=__NAMESERVER__ \
