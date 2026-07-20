@@ -158,6 +158,11 @@ gate() {
     printf 'dry-run: skipped dig gate for %s\n' "${ip:-reserved IP}"
     return 0
   fi
+  # An address lookup goes through get_cmd, which swallows failure, so a missing
+  # IP reaches here as an empty string. dig_count then reports "-", and both the
+  # pass and the die comparisons below error out on it rather than evaluating
+  # false, which would soft-pass a node nothing ever probed.
+  [ -n "${ip}" ] || die "gate failed: no IP to probe"
   for ((try = 1; try <= GATE_TRIES; try++)); do
     main_udp="$(dig_count "${ip}" "${MAINNET_DOMAIN}" udp)"
     main_tcp="$(dig_count "${ip}" "${MAINNET_DOMAIN}" tcp)"
@@ -243,13 +248,16 @@ roll_vm() {
   run_cmd gcloud compute instances remove-metadata "${name}" \
     --project="${PROJECT}" --zone="${zone}" \
     --keys=gce-container-declaration || true
-  run_cmd gcloud compute instances add-labels "${name}" \
-    --project="${PROJECT}" --zone="${zone}" \
-    --labels="zeeder-digest=${digest}"
   run_cmd gcloud compute instances reset "${name}" \
     --project="${PROJECT}" --zone="${zone}"
   rm -f "${rendered}"
   gate "${ip}"
+  # Labelled only once the node is serving again: the label is what --status and
+  # --audit read, so applying it before the gate would report a node as running
+  # the new digest even when it never came back.
+  run_cmd gcloud compute instances add-labels "${name}" \
+    --project="${PROJECT}" --zone="${zone}" \
+    --labels="zeeder-digest=${digest}"
 }
 
 create_vm() {
@@ -341,7 +349,11 @@ main() {
       verify_image
       # Canary order is array order, with ns1 intentionally last.
       each_selected roll_vm ;;
-    create) each_selected create_vm ;;
+    create)
+      # A new VM boots the pinned digest just as a rolled one does, so it gets
+      # the same fail-closed signature check.
+      verify_image
+      each_selected create_vm ;;
     status) show_status ;;
     audit) audit_all full ;;
     dns) print_dns ;;
