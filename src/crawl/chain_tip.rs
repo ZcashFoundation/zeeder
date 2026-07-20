@@ -3,8 +3,8 @@
 //! zebra-network derives the minimum protocol version it accepts during a
 //! handshake from the chain tip's height (`Version::min_remote_for_height`).
 //! [`SeederChainTip`] reports the activation height of the network's current
-//! upgrade, so the handshake rejects peers below that upgrade's floor (NU6.2,
-//! `170150`, on Mainnet) and they never reach the address book.
+//! upgrade, so the handshake rejects peers below that upgrade's floor (NU6.3,
+//! `170160`, on Mainnet and Testnet) and they never reach the address book.
 //!
 //! Only `best_tip_height` feeds that floor; the networking path reads no other
 //! [`ChainTip`] accessor, so the rest return `None` and `best_tip_changed`
@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn mainnet_floor_is_the_current_network_upgrade() {
         // Pins the floor so a zebra bump that activates the next upgrade trips here.
-        assert_eq!(version_floor(&Network::Mainnet), Version(170_150));
+        assert_eq!(version_floor(&Network::Mainnet), Version(170_160));
     }
 
     #[test]
