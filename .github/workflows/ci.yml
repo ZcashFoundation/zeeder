@@ -7,7 +7,10 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
-permissions: {}
+# Every job only reads the repo (checkout); none publish, so a read-only default
+# is the whole surface. Jobs that need more must opt in explicitly.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -40,14 +43,17 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
 
     steps:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 #v7.0.0
 
     - name: Build Docker image
       run: docker build -t zeeder:ci .
+
+    # ubuntu-latest preinstalls dnsutils; this only installs on an image that
+    # dropped it. Mirrors the guard in deploy.yml.
+    - name: Ensure dig is available
+      run: command -v dig >/dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends dnsutils; }
 
     # Building only proves the Dockerfile compiles. Nothing else in the pipeline
     # ever starts the image — release.yml signs and publishes it unstarted — so
