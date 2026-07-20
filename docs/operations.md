@@ -413,6 +413,28 @@ answering.
 Rollback is a `git revert` of `deploy/gcp/IMAGE` followed by another
 `--roll`.
 
+### CI-driven deploy
+
+The `Deploy fleet` workflow (`.github/workflows/deploy.yml`) runs the same
+`seeders.sh --roll` from CI, so an operator does not need `gcloud`, `cosign`, or
+the fleet inventory on their laptop. It is `workflow_dispatch` only, with a
+`dry_run` toggle (default on) and an optional `only` input; the local
+`seeders.sh --roll` remains the fallback and is unchanged.
+
+The run is human-gated twice: the manual dispatch, and the `production`
+environment's required reviewer. Cloud access is keyless, and the fleet
+inventory is injected from a repository variable into a runner-temp file
+(`FLEET_CONF_FILE`) and masked before any step can log it, so no plaintext
+inventory ever lands in the repository or a checkout. It is configuration, not
+a credential — nothing in it grants access, which is decided by IAM — so a
+readable variable keeps it maintainable.
+
+The workflow needs a one-time configuration before it can run: keyless CI
+authentication to the fleet project, the variables and secret referenced by
+`deploy.yml`, and a `production` environment with required reviewers. This is
+repository and cloud admin setup; the specific values are held by the operators.
+Verify with a `dry_run: true` dispatch before a real run.
+
 ### Image Pull Path
 
 The VMs pull the pinned digest from Docker Hub. During a Docker Hub outage,

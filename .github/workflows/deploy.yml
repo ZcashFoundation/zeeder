@@ -1,0 +1,92 @@
+# Manually dispatched fleet deploy: runs deploy/gcp/seeders.sh --roll from CI.
+# Rationale and one-time setup live in docs/operations.md "CI-driven deploy".
+name: Deploy fleet
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview gcloud/dig actions without changing the fleet
+        type: boolean
+        default: true
+      only:
+        description: Limit the roll to one VM name or ns label (optional)
+        type: string
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: deploy-fleet
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy the fleet
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 #v7.0.0
+        with:
+          persist-credentials: false
+
+      # Materialize and mask before anything can echo these values: the fleet
+      # inventory and the deployer account are configuration, not credentials, so
+      # they live in variables that stay readable and editable. Variables are not
+      # masked automatically, and this repository's workflow logs are public, so
+      # register the identifiers with add-mask first.
+      - name: Materialize fleet inventory
+        env:
+          FLEET_CONF: ${{ vars.FLEET_CONF }}
+        run: |
+          umask 077
+          printf '%s' "$FLEET_CONF" > "$RUNNER_TEMP/fleet.conf"
+
+      - name: Mask fleet identifiers
+        env:
+          DEPLOYER_SA: ${{ vars.GCP_SERVICE_ACCOUNT }}
+        run: |
+          # shellcheck disable=SC1091
+          source "$RUNNER_TEMP/fleet.conf"
+          echo "::add-mask::${PROJECT}"
+          echo "::add-mask::${SERVICE_ACCOUNT}"
+          echo "::add-mask::${DEPLOYER_SA}"
+          # Field 1 is the VM name — same row schema as each_selected() in
+          # seeders.sh (name|zone|region|ns). Keep the two in sync: a schema
+          # change that lands only there would silently mask the wrong field.
+          for row in "${SEEDERS[@]}"; do
+            echo "::add-mask::${row%%|*}"
+          done
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # ubuntu-latest preinstalls dnsutils; this only installs on an image that
+      # dropped it, so the usual path skips the slow apt-get update entirely.
+      - name: Ensure dig is available
+        run: command -v dig >/dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends dnsutils; }
+
+      - name: Roll the fleet
+        env:
+          FLEET_CONF_FILE: ${{ runner.temp }}/fleet.conf
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
+          ONLY_INPUT: ${{ inputs.only }}
+        run: |
+          args=()
+          if [ "$DRY_RUN_INPUT" = "true" ]; then args+=(--dry-run); fi
+          if [ -n "$ONLY_INPUT" ]; then args+=(--only "$ONLY_INPUT"); fi
+          args+=(--roll)
+          deploy/gcp/seeders.sh "${args[@]}"

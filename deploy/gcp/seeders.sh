@@ -2,12 +2,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ ! -f "${SCRIPT_DIR}/fleet.conf" ]; then
-  printf 'error: %s\n' "deploy/gcp/fleet.conf not found; copy fleet.conf.example to fleet.conf and fill in the fleet inventory" >&2
+# Fleet inventory is never committed. Locally it lives at deploy/gcp/fleet.conf;
+# CI points FLEET_CONF_FILE at a runner-temp file materialized from a repository
+# variable, so the same inventory can be injected without a plaintext file in the
+# checkout.
+FLEET_CONF_FILE="${FLEET_CONF_FILE:-${SCRIPT_DIR}/fleet.conf}"
+if [ ! -f "${FLEET_CONF_FILE}" ]; then
+  printf 'error: %s\n' "fleet inventory not found at ${FLEET_CONF_FILE}; copy deploy/gcp/fleet.conf.example to deploy/gcp/fleet.conf, or set FLEET_CONF_FILE" >&2
   exit 1
 fi
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/fleet.conf"
+# shellcheck disable=SC1090,SC1091
+source "${FLEET_CONF_FILE}"
 
 IMAGE_REF="$(<"${SCRIPT_DIR}/IMAGE")"
 TEMPLATE="${SCRIPT_DIR}/startup-script.sh.tmpl"
