@@ -1,6 +1,6 @@
-# Manually dispatched fleet deploy: runs deploy/gcp/seeders.sh --roll from CI.
+# Manually dispatched seeder deploy: runs deploy/gcp/seeders.sh --roll from CI.
 # Rationale and one-time setup live in docs/operations.md "CI-driven deploy".
-name: Deploy fleet
+name: Deploy seeders
 
 on:
   workflow_dispatch:
@@ -17,12 +17,11 @@ on:
 permissions: {}
 
 concurrency:
-  group: deploy-fleet
+  group: deploy-seeders
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Deploy the fleet
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: production
@@ -79,7 +78,7 @@ jobs:
       - name: Ensure dig is available
         run: command -v dig >/dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends dnsutils; }
 
-      - name: Roll the fleet
+      - name: Roll one VM at a time, ns1 last
         env:
           FLEET_CONF_FILE: ${{ runner.temp }}/fleet.conf
           DRY_RUN_INPUT: ${{ inputs.dry_run }}

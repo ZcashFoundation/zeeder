@@ -415,7 +415,7 @@ Rollback is a `git revert` of `deploy/gcp/IMAGE` followed by another
 
 ### CI-driven deploy
 
-The `Deploy fleet` workflow (`.github/workflows/deploy.yml`) runs the same
+The `Deploy seeders` workflow (`.github/workflows/deploy.yml`) runs the same
 `seeders.sh --roll` from CI, so an operator does not need `gcloud`, `cosign`, or
 the fleet inventory on their laptop. It is `workflow_dispatch` only, with a
 `dry_run` toggle (default on) and an optional `only` input; the local
