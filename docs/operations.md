@@ -430,7 +430,7 @@ a credential — nothing in it grants access, which is decided by IAM — so a
 readable variable keeps it maintainable.
 
 The workflow needs a one-time configuration before it can run: keyless CI
-authentication to the fleet project, the variables and secret referenced by
+authentication to the fleet project, the variables referenced by
 `deploy.yml`, and a `production` environment with required reviewers. This is
 repository and cloud admin setup; the specific values are held by the operators.
 Verify with a `dry_run: true` dispatch before a real run.
