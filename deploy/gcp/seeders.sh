@@ -118,11 +118,13 @@ vm() {
 }
 
 metadata() {
+  # describe takes no --filter (that is a list-command flag); selecting the key
+  # in the --format projection is the equivalent that actually runs. Without
+  # this the call errored, get_cmd swallowed it, and the audit's konlet check
+  # passed for every VM whether or not the metadata was still there.
   get_cmd gcloud compute instances describe "$1" \
     --project="${PROJECT}" --zone="$2" \
-    --flatten='metadata.items[]' \
-    --filter="metadata.items.key=$3" \
-    --format='value(metadata.items.value)'
+    --format="value(metadata.items.filter('key:$3').extract('value').flatten())"
 }
 
 count_a() {
