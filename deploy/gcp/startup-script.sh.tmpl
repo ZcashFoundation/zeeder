@@ -6,11 +6,21 @@ IMAGE_REF="__IMAGE_REF__"
 systemctl stop systemd-resolved || true
 printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' > /etc/resolv.conf
 
-# Keep boot reruns from accumulating duplicate DNS redirects.
+# Redirect privileged :53 to the container's unprivileged :1053. The `-C` guard
+# keeps boot reruns from stacking duplicate rules.
 iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 1053 \
   || iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 1053
 iptables -t nat -C PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 1053 \
   || iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 1053
+
+# COS defaults filter INPUT to DROP and opens only SSH. The redirect above
+# rewrites the port to 1053 before INPUT sees the packet, and host networking
+# means docker adds no accept rule of its own, so without this the DNS traffic
+# is dropped and the seeder answers nothing externally. Scope it to the DNS port.
+for _proto in udp tcp; do
+  iptables -C INPUT -p "${_proto}" --dport 1053 -j ACCEPT 2>/dev/null \
+    || iptables -A INPUT -p "${_proto}" --dport 1053 -j ACCEPT
+done
 
 # Persist zebra-network's peer cache across container recreation. The image sets
 # XDG_CACHE_HOME=/cache (owned by the non-root UID 65532), so mounting a host dir
