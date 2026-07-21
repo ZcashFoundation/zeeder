@@ -197,12 +197,27 @@ verify_image() {
 }
 
 firewall_ok() {
-  local rule
-  rule="$(get_cmd gcloud compute firewall-rules list \
-    --project="${PROJECT}" \
-    --filter="direction=INGRESS AND disabled=false AND sourceRanges:0.0.0.0/0 AND targetTags:${NETWORK_TAG} AND allowed[].IPProtocol=tcp AND allowed[].ports=53 AND allowed[].IPProtocol=udp AND allowed[].ports=53" \
-    --format='value(name)' | head -n1 || true)"
-  [ -n "${rule}" ] || "${DRY_RUN}"
+  if "${DRY_RUN}"; then
+    print_cmd gcloud compute firewall-rules list --project="${PROJECT}" >&2
+    return 0
+  fi
+  # A server-side --filter over list fields (targetTags, allowed[]) is rejected
+  # as an "invalid list filter expression" by some API versions, so fetch the
+  # ingress rules and match client-side. One rule must allow both udp:53 and
+  # tcp:53 from anywhere to the fleet tag. Fail closed on any gcloud error: this
+  # is a preflight, and an unconfirmable firewall must not let a roll proceed.
+  local disabled direction sources tags allowed
+  while IFS=';' read -r disabled direction sources tags allowed; do
+    [ "${disabled}" = False ] || continue
+    [ "${direction}" = INGRESS ] || continue
+    [[ ",${sources}," == *",0.0.0.0/0,"* ]] || continue
+    [[ ",${tags}," == *",${NETWORK_TAG},"* ]] || continue
+    [[ ",${allowed}," == *",udp:53,"* ]] || continue
+    [[ ",${allowed}," == *",tcp:53,"* ]] || continue
+    return 0
+  done < <(gcloud compute firewall-rules list --project="${PROJECT}" \
+    --format="csv[no-heading,separator=';'](disabled, direction, sourceRanges.list(), targetTags.list(), allowed[].map().firewall_rule().list())" 2>/dev/null)
+  return 1
 }
 
 audit_vm() {
