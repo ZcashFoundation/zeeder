@@ -104,7 +104,7 @@ mod tests {
     fn operations_docs_use_servability_vocabulary_for_peer_metrics() {
         let operations_docs = include_str!("../docs/operations.md");
         let unservable_metric_row = format!(
-            "| `{PEERS_UNSERVABLE}` | Gauge | `network=mainnet\\|testnet`, `reason=not_routable\\|wrong_port\\|not_recently_live\\|not_full_node\\|inbound\\|misbehaving` | Unservable peers, by reason | - |"
+            "| `{PEERS_UNSERVABLE}` | Gauge | `network=mainnet\\|testnet`, `reason=not_routable\\|wrong_port\\|not_recently_live\\|outdated_version\\|not_full_node\\|inbound\\|misbehaving` | Unservable peers, by reason | - |"
         );
 
         assert!(

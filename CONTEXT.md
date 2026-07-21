@@ -4,7 +4,7 @@ This glossary defines terms that carry architectural meaning in zeeder. Read it 
 
 ## Servable
 
-A peer is *servable* when the seeder may return it in DNS A or AAAA answers. A servable peer has been recently handshaked by zebra-network, advertises `NODE_NETWORK`, is routable, uses the network default port, was not learned from an inbound connection, and has no zebra-network misbehavior score. Servability is decided per network, against that network's crawler.
+A peer is *servable* when the seeder may return it in DNS A or AAAA answers. A servable peer has been recently handshaked by zebra-network, negotiated at or above the current observed protocol floor, advertises `NODE_NETWORK`, is routable, uses the network default port, was not learned from an inbound connection, and has no zebra-network misbehavior score. Servability is decided per network, against that network's crawler.
 
 Raw address-book membership is not enough. Gossiped, stale, inbound-provenance, misbehaving, wrong-port, or non-full-node peers remain known to zebra-network but are not servable.
 
@@ -30,9 +30,9 @@ Rate-limited packets increment `zeeder_dns_rate_limited_total`.
 
 ## Protocol-Version Floor
 
-The protocol-version floor is the minimum peer protocol version zebra-network accepts during handshake. zeeder does not store peer protocol versions itself. Instead, each network's `SeederChainTip` pins zebra-network to that network's current activation height so outdated peers fail handshake before they can become servable.
+The protocol-version floor is the minimum peer protocol version zebra-network accepts during handshake. Each network's `SeederChainTip` starts immediately below the newest compiled activation and advances only after Zeeder observes a fixed, diverse quorum beyond the reorganization-safe confirmation height. The servability predicate also checks each successful handshake's recorded negotiated version, so peers admitted before the transition stop appearing in DNS after the floor rises.
 
-The floor is reported per network through `zeeder_min_protocol_version` with a `network` label. A Zebra release that activates a network upgrade is handled through the runbook in `docs/network-upgrades.md`.
+The floor is reported per network through `zeeder_min_protocol_version` with a `network` label. [ADR 0007](docs/adr/0007-observed-network-upgrade-activation.md) defines activation evidence, and a Zebra release that supplies a new target is handled through the runbook in `docs/network-upgrades.md`.
 
 ## Contract Homes
 
