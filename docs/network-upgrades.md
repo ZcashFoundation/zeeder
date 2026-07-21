@@ -8,7 +8,7 @@ Each network crawler starts immediately below the newest activation height compi
 
 The floor advances only after all of these conditions hold:
 
-- 1 peer is sampled from each available IPv4 `/16` or IPv6 `/32` network group.
+- At most 64 available IPv4 `/16` or IPv6 `/32` network groups are selected uniformly, with 1 peer sampled from each selected group.
 - At least 12 groups participate.
 - At least 75% of those groups report the activation height plus Zebra's maximum reorganization depth, negotiate the target protocol version, and advertise `NODE_NETWORK`.
 - The same threshold holds for 3 consecutive sweeps, separated by the target block spacing.
@@ -71,7 +71,7 @@ To force fresh observation after investigating a suspected false confirmation, s
 |----------|--------|
 | Does an upgrade require Zeeder configuration changes? | No |
 | Can the new image be deployed before activation? | Yes; deployment keeps the previous floor |
-| What causes the floor to rise? | 75% of at least 12 network groups qualifying across 3 consecutive sweeps after the confirmation height |
+| What causes the floor to rise? | 75% of a uniform sample of 12 to 64 network groups qualifying across 3 consecutive sweeps after the confirmation height |
 | Does Zeeder depend on a node or endpoint? | No; each instance observes peers from its own address book |
 | Must the peer cache be cleared? | No; preserve it for observation and restart continuity |
 | What is the recovery control? | Delete only the affected `.activation` record, then restart |

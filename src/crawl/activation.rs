@@ -8,7 +8,7 @@
 //! make one impossible under a group-supermajority Sybil or full eclipse.
 
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     io,
     net::IpAddr,
     path::{Path, PathBuf},
@@ -38,6 +38,9 @@ use crate::{
 
 /// Minimum independent network groups required for an activation decision.
 const MIN_NETWORK_GROUPS: usize = 12;
+
+/// Maximum independent network groups probed concurrently in one sweep.
+const MAX_NETWORK_GROUPS_PER_SWEEP: usize = 64;
 
 /// Fixed supermajority required in each sweep.
 const QUORUM_NUMERATOR: usize = 3;
@@ -181,6 +184,7 @@ pub(crate) fn spawn(
                 ready_groups = evidence.ready_groups,
                 qualifying_sweeps = gate.qualifying_sweeps(),
                 required_groups = MIN_NETWORK_GROUPS,
+                maximum_groups = MAX_NETWORK_GROUPS_PER_SWEEP,
                 required_sweeps = REQUIRED_QUALIFYING_SWEEPS,
                 quorum_numerator = QUORUM_NUMERATOR,
                 quorum_denominator = QUORUM_DENOMINATOR,
@@ -277,7 +281,7 @@ fn sample_network_groups(
     network: &Network,
     minimum_version: Version,
 ) -> Vec<PeerSocketAddr> {
-    let mut candidates = {
+    let candidates = {
         let book = match address_book.lock() {
             Ok(book) => book,
             Err(poisoned) => {
@@ -293,10 +297,24 @@ fn sample_network_groups(
             .collect::<Vec<_>>()
     };
 
+    sample_network_group_candidates(candidates)
+}
+
+/// Choose one random peer per group, then uniformly bound the group sample.
+fn sample_network_group_candidates(mut candidates: Vec<PeerSocketAddr>) -> Vec<PeerSocketAddr> {
     candidates.shuffle(&mut rng());
-    let mut sampled_groups = HashSet::new();
-    candidates.retain(|addr| sampled_groups.insert(network_group(addr.ip())));
-    candidates
+
+    let mut representative_by_group = HashMap::new();
+    for addr in candidates {
+        representative_by_group
+            .entry(network_group(addr.ip()))
+            .or_insert(addr);
+    }
+
+    let mut sampled_peers = representative_by_group.into_values().collect::<Vec<_>>();
+    sampled_peers.shuffle(&mut rng());
+    sampled_peers.truncate(MAX_NETWORK_GROUPS_PER_SWEEP);
+    sampled_peers
 }
 
 async fn observe_sweep(
@@ -362,8 +380,9 @@ async fn persist_confirmation(path: Option<PathBuf>, target: ActivationTarget) -
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashSet,
         error::Error,
-        net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     };
 
     use super::*;
@@ -445,6 +464,29 @@ mod tests {
             network_group(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 1, 2, 3, 4, 5, 6))),
             network_group(IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb9, 1, 2, 3, 4, 5, 6)))
         );
+    }
+
+    #[test]
+    fn sampling_caps_unique_network_groups() {
+        let candidates = (1..=80)
+            .flat_map(|group| {
+                [1, 2].map(|host| {
+                    PeerSocketAddr::from(SocketAddr::new(
+                        IpAddr::V4(Ipv4Addr::new(group, 1, host, 1)),
+                        8233,
+                    ))
+                })
+            })
+            .collect();
+
+        let sampled = sample_network_group_candidates(candidates);
+        let sampled_groups = sampled
+            .iter()
+            .map(|addr| network_group(addr.ip()))
+            .collect::<HashSet<_>>();
+
+        assert_eq!(sampled.len(), MAX_NETWORK_GROUPS_PER_SWEEP);
+        assert_eq!(sampled_groups.len(), sampled.len());
     }
 
     #[test]

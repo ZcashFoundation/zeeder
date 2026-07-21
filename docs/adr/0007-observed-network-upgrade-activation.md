@@ -14,7 +14,7 @@ Peers already report their start height and protocol version during the Zcash ha
 
 Each crawler starts its `SeederChainTip` immediately below the newest compiled activation height. It raises the tip to that activation height only after an independent observer confirms all of these conditions:
 
-- The observer samples 1 recently live, outbound, full node from each available IPv4 `/16` or IPv6 `/32` network group.
+- The observer uniformly samples at most 64 available IPv4 `/16` or IPv6 `/32` network groups, then chooses 1 recently live, outbound, full node from each selected group.
 - At least 12 network groups participate in a completed sweep.
 - At least 75% of the sampled groups report a start height at or above the activation height plus Zebra's maximum reorganization depth, negotiate the new protocol version, and advertise `NODE_NETWORK`.
 - The threshold holds for 3 consecutive sweeps, separated by the target block spacing. A timeout, failed handshake, or nonqualifying response remains in the denominator and counts as not ready.
@@ -25,7 +25,7 @@ Before raising the floor, Zeeder atomically persists an exact record of the acti
 
 ## Rationale
 
-Network-group voting limits the weight of many addresses from one prefix, while the minimum group count prevents a small, internally consistent view from deciding activation. A fixed 75% threshold requires a supermajority without allowing a stalled minority to block the transition indefinitely. Requiring 3 spaced sweeps rejects brief height spikes and transient partitions, and waiting through the maximum reorganization depth avoids reacting at the activation boundary.
+Network-group voting limits the weight of many addresses from one prefix, while uniform selection prevents prefixes containing more addresses from gaining extra sampling weight. The 64-group cap bounds concurrent handshakes and prevents an attacker-influenced address book from expanding the quorum denominator. The minimum group count prevents a small, internally consistent view from deciding activation, and a fixed 75% threshold requires a supermajority without allowing a stalled minority to block the transition indefinitely. Requiring 3 spaced sweeps rejects brief height spikes and transient partitions, while waiting through the maximum reorganization depth avoids reacting at the activation boundary.
 
 The algorithm treats missing evidence conservatively. Failed and timed-out probes do not disappear from the denominator, and any nonqualifying sweep resets the consecutive-sweep counter. Persistence makes the transition monotonic across ordinary restarts and fleet rolls.
 
@@ -33,6 +33,7 @@ The algorithm treats missing evidence conservatively. Failed and timed-out probe
 
 - Zeeder can be deployed before activation without removing nodes that satisfy the previous protocol floor.
 - Each Zeeder instance decides independently from the peers it has discovered, so the design adds no node or endpoint dependency.
+- Each observation sweep opens at most 64 concurrent isolated handshakes.
 - The protocol floor can rise later than the chain reaches the confirmation height when the address book lacks 12 groups or fewer than 75% of groups qualify.
 - After confirmation, the servable-peer cache rechecks each peer's negotiated version against the new floor, which removes handshakes admitted under the previous floor from DNS responses immediately.
 - Peer start heights remain self-reported. An attacker that controls at least 75% of the sampled network groups, or fully eclipses a seeder, can still cause a false confirmation; this design raises the cost of false evidence but cannot authenticate chain work.
