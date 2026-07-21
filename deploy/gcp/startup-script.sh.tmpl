@@ -23,7 +23,16 @@ chown 65532:65532 /var/lib/zeeder/cache
 # transient outage: a reboot must still start the already-pinned local image.
 # `docker run` below still fails closed if the digest is absent locally too.
 docker pull "${IMAGE_REF}" || true
-docker rm -f zeeder 2>/dev/null || true
+
+# This VM runs exactly one container, ours. Clear every existing container first
+# — notably the container the retired konlet mechanism leaves behind: it has
+# restart=always, so it survives the reboot and reclaims the host ports (:1053,
+# :8080, :9999), crash-looping ours. Removing the konlet metadata stops konlet
+# from recreating it on a later boot but does not stop the already-running one.
+for existing in $(docker ps -aq); do
+  docker rm -f "${existing}" 2>/dev/null || true
+done
+
 docker run -d \
   --name zeeder \
   --network host \
