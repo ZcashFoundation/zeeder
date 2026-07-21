@@ -7,6 +7,11 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+# Every job only reads the repo (checkout); none publish, so a read-only default
+# is the whole surface. Jobs that need more must opt in explicitly.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -43,7 +48,70 @@ jobs:
     - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 #v7.0.0
 
     - name: Build Docker image
-      run: docker build .
+      run: docker build -t zeeder:ci .
+
+    # ubuntu-latest preinstalls dnsutils; this only installs on an image that
+    # dropped it. Mirrors the guard in deploy.yml.
+    - name: Ensure dig is available
+      run: command -v dig >/dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends dnsutils; }
+
+    # Building only proves the Dockerfile compiles. Nothing else in the pipeline
+    # ever starts the image — release.yml signs and publishes it unstarted — so
+    # without this the first execution of any build is on a production VM.
+    - name: Smoke test the image
+      run: |
+        set -euo pipefail
+
+        # Host networking and the loopback endpoints mirror the fleet, so this
+        # exercises the same configuration deploy/gcp/startup-script.sh.tmpl uses.
+        docker run -d --name zeeder-ci --network host \
+          --env ZEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053 \
+          --env ZEEDER__ZONES__MAINNET__DOMAIN=mainnet.seeder.example.com \
+          --env ZEEDER__ZONES__MAINNET__NAMESERVER=ns1.example.com \
+          --env ZEEDER__ZONES__MAINNET__TTL=600 \
+          --env ZEEDER__ZONES__TESTNET__DOMAIN=testnet.seeder.example.com \
+          --env ZEEDER__ZONES__TESTNET__NAMESERVER=ns1.example.com \
+          --env ZEEDER__ZONES__TESTNET__TTL=300 \
+          --env ZEEDER__METRICS__ENDPOINT_ADDR=127.0.0.1:9999 \
+          --env ZEEDER__HEALTH__ENDPOINT_ADDR=127.0.0.1:8080 \
+          --env ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND=50 \
+          --env ZEEDER__RATE_LIMIT__BURST_SIZE=100 \
+          zeeder:ci
+
+        # Liveness. Also catches a container that exited on startup, which is the
+        # failure this whole step exists to keep out of production.
+        for _ in $(seq 30); do
+          if curl -fsS -o /dev/null http://127.0.0.1:8080/health; then
+            healthy=1
+            break
+          fi
+          if [ "$(docker inspect -f '{{.State.Running}}' zeeder-ci)" != true ]; then
+            echo "::error::the container exited during startup"
+            exit 1
+          fi
+          sleep 1
+        done
+        [ "${healthy:-}" = 1 ] || { echo "::error::/health never answered"; exit 1; }
+
+        # Readiness must answer, but not necessarily 200: a crawler this young has
+        # no servable peers, so asserting 200 would be asserting network luck.
+        echo "/ready -> $(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/ready)"
+
+        curl -fsS http://127.0.0.1:9999/metrics | head -c1 | grep -q . \
+          || { echo "::error::/metrics returned nothing"; exit 1; }
+
+        # The listener answers over both transports, which is what the fleet
+        # serves and what the roll gate checks. A fresh crawler has no peers to
+        # hand out, so this asserts a well-formed response, not a populated one.
+        for transport in "" "+tcp"; do
+          dig +time=3 +tries=2 ${transport} @127.0.0.1 -p 1053 \
+            mainnet.seeder.example.com A | grep -q 'status: NOERROR' \
+            || { echo "::error::no NOERROR response over ${transport:-udp}"; exit 1; }
+        done
+
+    - name: Container logs
+      if: always()
+      run: docker logs zeeder-ci 2>&1 | tail -50 || true
 
   deploy-gcp:
     runs-on: ubuntu-latest
