@@ -29,6 +29,7 @@ graph TD
 - **Rate Limiter**: Per-IP rate limiting using governor crate
 - **Servable Peer Cache**: Lock-free cache of servable peers, updated every 5 seconds
 - **Address Book**: Thread-safe peer storage managed by zebra-network
+- **Activation Observer**: Diverse, sustained peer-height observation that advances each network's protocol floor
 - **Metrics**: Prometheus metrics via metrics-exporter-prometheus
 
 ## Data Flow
@@ -38,7 +39,7 @@ graph TD
 1. Load configuration (defaults, optional TOML file, then environment overrides); fail if no zone is configured
 2. Initialize metrics endpoint (if enabled)
 3. Bind the shared DNS UDP and TCP sockets, failing before P2P startup if the configured address is unavailable
-4. For each configured network: pin its chain-tip floor, initialize zebra-network with its address book, and spawn its address cache updater (every 5 seconds), building one seed zone bound to that network's servable-peer feed
+4. For each configured network: load an exact persisted activation record if one exists, start the chain tip at either the previous or confirmed floor, initialize zebra-network, and spawn the address-cache updater and activation observer
 5. Create the shared rate limiter (if enabled)
 6. Start the health endpoint (if enabled), reporting per-zone readiness
 7. Register the pre-bound sockets and start the DNS server with the routed zone set
@@ -101,7 +102,7 @@ sequenceDiagram
     loop Every 5 seconds
         CacheUpdater->>AddressBook: Lock & read peers
         AddressBook-->>CacheUpdater: All peers
-        CacheUpdater->>CacheUpdater: Classify (recently-live, full node, routable, default port, outbound, clean)
+        CacheUpdater->>CacheUpdater: Classify (recently-live, current-version, full node, routable, default port, outbound, clean)
         CacheUpdater->>CacheUpdater: Separate IPv4/IPv6
         CacheUpdater->>CacheUpdater: Shuffle & take 25 each
         CacheUpdater->>AddressCache: Update via watch channel
@@ -112,8 +113,15 @@ sequenceDiagram
 **How it works:**
 - Background task updates cache every 5 seconds
 - Cache contains pre-filtered, pre-shuffled IPv4 and IPv6 lists
+- Each refresh reads the current observed protocol floor, so a floor change removes stale negotiated versions
 - DNS queries read from cache without locking (via tokio `watch` channel)
 - Eliminates lock contention during high query load
+
+### Observed Activation
+
+The activation observer separates a compiled upgrade target from proof that the network has reached it. Each sweep uniformly selects at most 64 IPv4 `/16` or IPv6 `/32` groups from the crawler's own address book, chooses 1 recently live peer per selected group, and performs isolated handshakes that accept the previous protocol floor. At least 75% of 12 or more sampled groups must report the target version and a height beyond the activation plus maximum reorganization depth for 3 consecutive sweeps.
+
+After the final qualifying sweep, the observer persists the exact decision and advances `SeederChainTip`. zebra-network receives the height change through its `ChainTip` monitor, while the 5-second servable-peer refresh applies the same new minimum to cached handshakes. [ADR 0007](adr/0007-observed-network-upgrade-activation.md) defines the trust model, thresholds, and failure behavior.
 
 ### Crawler Status and Metrics
 
@@ -150,8 +158,9 @@ sequenceDiagram
 
 **Our usage:**
 - Initialize one independent crawler per configured network, each with a dummy inbound service (reject all)
-- Pass each crawler a `SeederChainTip` pinned to that network's current upgrade, so the handshake rejects outdated-version peers
+- Pass each crawler an observed `SeederChainTip`, so the handshake stays at the previous floor until the activation observer confirms the compiled target
 - Read each network's Address Book for its servable peers
+- Probe 1 recently live peer per network group only while a compiled activation remains unconfirmed
 - Hold one peer-set handle per network for the process lifetime (dropping it stops that network's crawl)
 - Never send blockchain data (we're not a full node)
 
@@ -237,7 +246,8 @@ sequenceDiagram
 **Peer Servability (done in cache updater, see `crawl::servability`):**
 
 A peer is *servable* only if it is:
-- Recently live: zebra-network handshaked it within the liveness window (transitively current-version and reachable)
+- Recently live: zebra-network handshaked it within the liveness window
+- Current version: its recorded negotiated version meets the current observed floor
 - A full node: advertises the `NODE_NETWORK` service (zebra's handshake enforces the version floor but not services, so the seeder gates on it)
 - Routable (no loopback, unspecified, multicast)
 - On the network default port (usually 8233)
@@ -289,6 +299,7 @@ It reads each zone's servable-peer feed directly, so readiness reflects live cra
 - [ADR 0004: Peer Servability and Protocol-Version Floor](adr/0004-peer-servability.md)
 - [ADR 0005: Multi-Network Serving Topology](adr/0005-multi-network-topology.md)
 - [ADR 0006: Image Identity and Fleet Delivery](adr/0006-image-identity-and-fleet-delivery.md)
+- [ADR 0007: Observed Network-Upgrade Activation](adr/0007-observed-network-upgrade-activation.md)
 
 ## Design Principles
 

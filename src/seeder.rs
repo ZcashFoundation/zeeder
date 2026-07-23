@@ -12,7 +12,7 @@ use zebra_chain::chain_tip::ChainTip;
 use crate::{
     build_info,
     config::{SeederConfig, ZcashNetwork, ZoneConfig},
-    crawl::{address_cache, chain_tip},
+    crawl::{activation, address_cache, chain_tip},
     dns::{
         rate_limiter::RateLimiter,
         request_handler::{DnsRequestHandler, SeedZone},
@@ -100,6 +100,11 @@ async fn spawn_network_crawler(
     let network_config = network.network_config();
     let zcash_network = network_config.network.clone();
     let network_label = network.label();
+    let activation_target = activation::ActivationTarget::latest(&zcash_network);
+    let confirmation_path =
+        activation::confirmation_path(&network_config.cache_dir, &zcash_network);
+    let activation_confirmed =
+        activation::load_confirmation(confirmation_path.as_deref(), activation_target).await;
 
     tracing::info!(
         network = network_label,
@@ -113,15 +118,17 @@ async fn spawn_network_crawler(
         )
     });
 
-    // Pin a chain tip at the current network upgrade so zebra-network's
-    // handshake rejects peers advertising an outdated protocol version.
-    let tip = chain_tip::SeederChainTip::at_current_upgrade(&zcash_network);
+    // Keep the previous upgrade's floor until independent observations confirm
+    // that the compiled activation is safely buried, or load that exact
+    // confirmation from the local cache after a restart.
+    let tip = chain_tip::SeederChainTip::new(activation_target, activation_confirmed);
     let min_protocol_version =
         zebra_network::Version::min_remote_for_height(&zcash_network, tip.best_tip_height());
     tracing::info!(
         network = network_label,
         %min_protocol_version,
-        "enforcing peer protocol-version floor"
+        activation_confirmed,
+        "enforcing observed peer protocol-version floor"
     );
     gauge!(MIN_PROTOCOL_VERSION, LABEL_NETWORK => network_label)
         .set(f64::from(min_protocol_version.0));
@@ -133,10 +140,23 @@ async fn spawn_network_crawler(
     )
     .set(1.0);
 
-    let (peer_set, address_book, misbehavior_sender) =
-        zebra_network::init(network_config, inbound_service, tip, user_agent).await;
+    let (peer_set, address_book, misbehavior_sender) = zebra_network::init(
+        network_config,
+        inbound_service,
+        tip.clone(),
+        user_agent.clone(),
+    )
+    .await;
 
-    let servable_peers = address_cache::spawn(address_book, network);
+    let servable_peers = address_cache::spawn(address_book.clone(), network, tip.clone());
+    let activation_observer = activation::spawn(
+        address_book,
+        network,
+        user_agent,
+        tip,
+        activation_target,
+        confirmation_path,
+    );
 
     let seed_zone = SeedZone::new(
         network,
@@ -146,9 +166,9 @@ async fn spawn_network_crawler(
         servable_peers,
     )?;
 
-    // `peer_set` is the crawl kill-switch (its drop aborts the crawl tasks);
-    // `misbehavior_sender` keeps zebra-network's misbehavior batch task alive.
-    let crawler_guard = (peer_set, misbehavior_sender);
+    // Dropping this guard aborts both the crawler and activation observer;
+    // `misbehavior_sender` also keeps zebra-network's batch task alive.
+    let crawler_guard = (peer_set, misbehavior_sender, activation_observer);
 
     Ok((seed_zone, crawler_guard))
 }

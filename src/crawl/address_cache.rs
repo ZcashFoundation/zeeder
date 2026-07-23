@@ -4,12 +4,15 @@ use chrono::Utc;
 use metrics::{counter, gauge};
 use rand::{rng, seq::SliceRandom};
 use tokio::sync::watch;
-use zebra_chain::parameters::Network;
-use zebra_network::{AddressBook, PeerSocketAddr};
+use zebra_chain::{chain_tip::ChainTip, parameters::Network};
+use zebra_network::{AddressBook, PeerSocketAddr, Version};
 
 use crate::{
     config::ZcashNetwork,
-    crawl::servability::{UnservableReason, classify_peer},
+    crawl::{
+        chain_tip::SeederChainTip,
+        servability::{UnservableReason, classify_peer},
+    },
     metrics::{
         ADDR_FAMILY_IPV4, ADDR_FAMILY_IPV6, LABEL_ADDR_FAMILY, LABEL_NETWORK, LABEL_REASON,
         MUTEX_POISONING_TOTAL, PEERS_KNOWN, PEERS_SERVABLE, PEERS_UNSERVABLE,
@@ -48,6 +51,7 @@ impl ServablePeers {
 pub(crate) fn spawn(
     address_book: Arc<std::sync::Mutex<AddressBook>>,
     network: ZcashNetwork,
+    tip: SeederChainTip,
 ) -> watch::Receiver<ServablePeers> {
     let (servable_peers_sender, servable_peers_receiver) = watch::channel(ServablePeers::default());
 
@@ -61,6 +65,8 @@ pub(crate) fn spawn(
             tokio::time::sleep(CACHE_REFRESH_INTERVAL).await;
             refresh_count = refresh_count.wrapping_add(1);
             let should_log_status = refresh_count.is_multiple_of(CRAWLER_STATUS_LOG_REFRESHES);
+            let minimum_version =
+                Version::min_remote_for_height(&zcash_network, tip.best_tip_height());
 
             let servable_peers = {
                 let guard = match address_book.lock() {
@@ -75,7 +81,13 @@ pub(crate) fn spawn(
                         poisoned.into_inner()
                     }
                 };
-                servable_peers(&guard, &zcash_network, network_label, should_log_status)
+                servable_peers(
+                    &guard,
+                    &zcash_network,
+                    minimum_version,
+                    network_label,
+                    should_log_status,
+                )
             };
 
             if servable_peers_sender.send(servable_peers).is_err() {
@@ -101,6 +113,7 @@ pub(crate) fn spawn(
 fn servable_peers(
     book: &AddressBook,
     network: &Network,
+    minimum_version: Version,
     network_label: &'static str,
     should_log_status: bool,
 ) -> ServablePeers {
@@ -111,7 +124,7 @@ fn servable_peers(
     let mut unservable: HashMap<UnservableReason, usize> = HashMap::new();
 
     for meta in book.peers() {
-        match classify_peer(&meta, now, network) {
+        match classify_peer(&meta, now, network, minimum_version) {
             Ok(()) => {
                 let addr = meta.addr();
                 if addr.ip().is_ipv4() {
@@ -217,7 +230,13 @@ mod tests {
         book.update(MetaAddr::new_initial_peer(peer([1, 2, 3, 4], 8233)));
         assert_eq!(book.len(), 1, "the peer should be in the book");
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "never-handshaked peers must not be served"
@@ -235,9 +254,40 @@ mod tests {
             false,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         let served: Vec<IpAddr> = peers.ipv4.iter().map(|p| p.ip()).collect();
         assert_eq!(served, vec![IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))]);
+    }
+
+    #[test]
+    fn peer_admitted_before_activation_is_removed_by_the_new_floor() {
+        let mut book = empty_book();
+        book.update(MetaAddr::new_connected(
+            peer([1, 2, 3, 4], 8233),
+            &PeerServices::NODE_NETWORK,
+            false,
+            TEST_USER_AGENT.to_string(),
+            zebra_network::Version(170_150),
+        ));
+
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            zebra_network::Version(170_160),
+            "mainnet",
+            false,
+        );
+
+        assert!(
+            peers.ipv4.is_empty() && peers.ipv6.is_empty(),
+            "a cached handshake below the raised floor must stop being served"
+        );
     }
 
     #[test]
@@ -250,7 +300,13 @@ mod tests {
             false,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "a recently-live non-full-node peer must not be served"
@@ -267,7 +323,13 @@ mod tests {
             true,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "an inbound peer must not be served"
@@ -293,7 +355,13 @@ mod tests {
             "the peer should carry the sub-ban misbehavior score"
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "a misbehaving peer must not be served"
@@ -312,7 +380,13 @@ mod tests {
             false,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         assert!(
             peers.ipv4.is_empty(),
             "peers on a non-default port must not be served"

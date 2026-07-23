@@ -66,7 +66,7 @@ zeeder/
 - **`commands.rs`**: CLI parsing, config loading, and command dispatch
 - **`config.rs`**: `SeederConfig` struct, configuration loading
 - **`seeder.rs`**: Composition root for crawling, DNS serving, and shutdown
-- **`crawl/`**: Chain tip, peer servability, and servable peer cache
+- **`crawl/`**: Activation observation, chain tip, peer servability, and servable peer cache
 - **`dns/`**: DNS request handling and rate limiting
 - **`metrics.rs`**: Prometheus metrics initialization
 
@@ -82,10 +82,12 @@ zeeder/
 
 **Seeder (`seeder.rs`):**
 - `run()`: Composition root; spawns one crawler per network and the shared DNS server
-- `spawn_network_crawler()`: Per-network setup (chain tip, zebra-network init, cache, seed zone)
+- `spawn_network_crawler()`: Per-network setup (activation state, chain tip, zebra-network init, cache, seed zone)
 
 **Crawl (`crawl/`):**
-- `SeederChainTip`: Protocol-version floor for zebra-network handshakes
+- `ActivationTarget`: Newest compiled upgrade and its reorganization-safe confirmation height
+- `SeederChainTip`: Watch-backed protocol-version floor for zebra-network handshakes
+- `activation::spawn()`: Diverse, sustained peer observer that persists and publishes activation
 - `classify_peer()`: Peer servability predicate
 - `address_cache::spawn()`: One network's servable peer refresh loop and crawler monitoring
 - `ServablePeers`: Shuffled, capped peer snapshot for DNS queries

@@ -1,49 +1,69 @@
-//! A fixed chain tip that pins zebra-network's peer protocol-version floor.
+//! A watch-backed chain tip that advances only after independent activation
+//! observation.
 //!
 //! zebra-network derives the minimum protocol version it accepts during a
 //! handshake from the chain tip's height (`Version::min_remote_for_height`).
-//! [`SeederChainTip`] reports the activation height of the network's current
-//! upgrade, so the handshake rejects peers below that upgrade's floor (NU6.3,
-//! `170160`, on Mainnet and Testnet) and they never reach the address book.
+//! [`SeederChainTip`] starts immediately below the newest compiled activation,
+//! keeping the previous upgrade's floor. The activation observer advances it
+//! only after a fixed, sustained quorum reports the activation safely buried.
 //!
-//! Only `best_tip_height` feeds that floor; the networking path reads no other
-//! [`ChainTip`] accessor, so the rest return `None` and `best_tip_changed`
-//! pends forever.
+//! Only `best_tip_height` and `best_tip_changed` feed that floor; the other
+//! [`ChainTip`] accessors return no chain data because Zeeder remains stateless.
 
-use std::{future, sync::Arc};
+use std::{io, sync::Arc};
 
 use chrono::{DateTime, Utc};
+use tokio::sync::watch;
 use zebra_chain::{
     BoxError,
     block::{self, Height},
     chain_tip::ChainTip,
-    parameters::{Network, NetworkUpgrade},
     transaction,
 };
 
-/// A chain tip frozen at the activation height of the network's current upgrade.
+use crate::crawl::activation::ActivationTarget;
+
+/// The activation height currently trusted by zebra-network.
 #[derive(Clone, Debug)]
 pub(crate) struct SeederChainTip {
-    height: Height,
+    activation_height: Height,
+    sender: Arc<watch::Sender<Height>>,
+    receiver: watch::Receiver<Height>,
 }
 
 impl SeederChainTip {
-    /// Pin the tip to the activation height of `network`'s current
-    /// (highest-activated) network upgrade.
-    ///
-    /// The height comes from zebra-chain's activation table rather than a
-    /// hardcoded constant, so the enforced version floor rises automatically
-    /// when a future zebra-chain release activates the next upgrade.
-    pub(crate) fn at_current_upgrade(network: &Network) -> Self {
-        let (_upgrade, height) =
-            NetworkUpgrade::current_with_activation_height(network, Height::MAX);
-        Self { height }
+    /// Start at the previous upgrade, or at the target when already persisted.
+    pub(crate) fn new(target: ActivationTarget, confirmed: bool) -> Self {
+        let initial_height = if confirmed {
+            target.activation_height
+        } else {
+            target.pre_activation_height
+        };
+        let (sender, receiver) = watch::channel(initial_height);
+
+        Self {
+            activation_height: target.activation_height,
+            sender: Arc::new(sender),
+            receiver,
+        }
+    }
+
+    /// Advance to the observed activation height. This operation is monotone.
+    pub(crate) fn confirm_activation(&self) {
+        if *self.sender.borrow() < self.activation_height {
+            self.sender.send_replace(self.activation_height);
+        }
+    }
+
+    /// Return whether the observed or persisted activation has raised the tip.
+    pub(crate) fn is_activation_confirmed(&self) -> bool {
+        *self.receiver.borrow() >= self.activation_height
     }
 }
 
 impl ChainTip for SeederChainTip {
     fn best_tip_height(&self) -> Option<Height> {
-        Some(self.height)
+        Some(*self.receiver.borrow())
     }
 
     fn best_tip_hash(&self) -> Option<block::Hash> {
@@ -66,9 +86,12 @@ impl ChainTip for SeederChainTip {
         Arc::new([])
     }
 
-    /// The tip is fixed, so a change is never signalled.
     async fn best_tip_changed(&mut self) -> Result<(), BoxError> {
-        future::pending().await
+        self.receiver.changed().await.map_err(|error| {
+            Box::new(io::Error::other(format!(
+                "activation-height watch unexpectedly closed: {error}"
+            ))) as BoxError
+        })
     }
 
     fn mark_best_tip_seen(&mut self) {}
@@ -76,12 +99,46 @@ impl ChainTip for SeederChainTip {
 
 #[cfg(test)]
 mod tests {
+    use zebra_chain::parameters::Network;
     use zebra_network::Version;
 
     use super::*;
+    use crate::crawl::activation::ActivationTarget;
 
-    fn version_floor(network: &Network) -> Version {
-        let tip = SeederChainTip::at_current_upgrade(network);
+    #[test]
+    fn protocol_floor_changes_only_after_activation_confirmation() {
+        let network = Network::Mainnet;
+        let target = ActivationTarget::latest(&network);
+        let tip = SeederChainTip::new(target, false);
+
+        assert_eq!(
+            Version::min_remote_for_height(&network, tip.best_tip_height()),
+            Version(170_150)
+        );
+
+        tip.confirm_activation();
+
+        assert_eq!(
+            Version::min_remote_for_height(&network, tip.best_tip_height()),
+            Version(170_160)
+        );
+    }
+
+    #[tokio::test]
+    async fn activation_confirmation_notifies_zebra_network() -> Result<(), BoxError> {
+        let target = ActivationTarget::latest(&Network::Mainnet);
+        let tip = SeederChainTip::new(target, false);
+        let mut subscriber = tip.clone();
+
+        tip.confirm_activation();
+        subscriber.best_tip_changed().await?;
+
+        assert_eq!(subscriber.best_tip_height(), Some(target.activation_height));
+        Ok(())
+    }
+
+    fn version_floor(network: &Network, confirmed: bool) -> Version {
+        let tip = SeederChainTip::new(ActivationTarget::latest(network), confirmed);
         Version::min_remote_for_height(network, tip.best_tip_height())
     }
 
@@ -90,28 +147,25 @@ mod tests {
     }
 
     #[test]
-    fn mainnet_floor_is_the_current_network_upgrade() {
-        // Pins the floor so a zebra bump that activates the next upgrade trips here.
-        assert_eq!(version_floor(&Network::Mainnet), Version(170_160));
+    fn confirmed_mainnet_floor_matches_the_compiled_target() {
+        assert_eq!(version_floor(&Network::Mainnet, true), Version(170_160));
     }
 
     #[test]
-    fn testnet_floor_is_the_current_network_upgrade() {
-        // Pins the floor so a zebra bump that activates the next upgrade trips here.
+    fn confirmed_testnet_floor_matches_the_compiled_target() {
         assert_eq!(
-            version_floor(&Network::new_default_testnet()),
+            version_floor(&Network::new_default_testnet(), true),
             Version(170_160)
         );
     }
 
     #[test]
     fn chain_tip_does_not_lower_no_chain_tip_fallback() {
-        // Zebra's no-tip fallback can already match the current upgrade floor.
-        // The fixed tip must never lower it, and still lets future activation
-        // table updates raise the floor automatically.
+        // The pre-activation tip must not lower Zebra's previous-upgrade
+        // fallback while the observer gathers evidence.
         for network in [Network::Mainnet, Network::new_default_testnet()] {
             assert!(
-                version_floor(&network) >= no_chain_tip_floor(&network),
+                version_floor(&network, false) >= no_chain_tip_floor(&network),
                 "{network} floor must not be below the NoChainTip fallback"
             );
         }
