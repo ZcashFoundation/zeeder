@@ -108,8 +108,19 @@ render_startup_script() {
 }
 
 addr() {
-  get_cmd gcloud compute addresses describe "$1" \
-    --project="${PROJECT}" --region="$2" --format='value(address)'
+  local name="$1" region="$2" ip
+  # Identify the reserved address by the VM using it, because an address name
+  # does not always match the name of the VM it serves. Every caller wants the
+  # address value, never its name.
+  ip="$(get_cmd gcloud compute addresses list --project="${PROJECT}" \
+    --filter="region:(${region}) AND users:(${name})" --format='value(address)' | head -n1)"
+  # An address reserved before its VM exists has no user yet, so --create still
+  # resolves it by name.
+  if [ -z "${ip}" ]; then
+    ip="$(get_cmd gcloud compute addresses describe "${name}" \
+      --project="${PROJECT}" --region="${region}" --format='value(address)')"
+  fi
+  printf '%s\n' "${ip}"
 }
 
 vm() {
