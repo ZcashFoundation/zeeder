@@ -1,6 +1,9 @@
 //! Command-line interface and process entry point for the seeder.
 
-use crate::config::SeederConfig;
+use crate::{
+    config::{SeederConfig, ZcashNetwork},
+    crawl::activation,
+};
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::{Context, Result, bail};
 use std::{io::Write, path::PathBuf};
@@ -30,6 +33,28 @@ pub(crate) enum Commands {
     Start,
     /// Print the resolved configuration as TOML and exit.
     PrintConfig,
+    /// Explicitly attest an already-activated compiled network upgrade.
+    AttestActivation {
+        /// Network whose compiled activation is being attested.
+        #[arg(long)]
+        network: ZcashNetwork,
+
+        /// Zebra cache root that contains the network peer-cache directory.
+        #[arg(long)]
+        cache_dir: PathBuf,
+
+        /// Activation height independently verified by the operator.
+        #[arg(long)]
+        activation_height: u32,
+
+        /// Confirmation height independently verified by the operator.
+        #[arg(long)]
+        confirmation_height: u32,
+
+        /// Minimum protocol version independently verified by the operator.
+        #[arg(long)]
+        minimum_protocol_version: u32,
+    },
 }
 
 fn log_filter_from_env() -> Result<EnvFilter> {
@@ -45,7 +70,7 @@ fn log_filter_from_env() -> Result<EnvFilter> {
 
 impl SeederApp {
     pub(crate) async fn run() -> Result<()> {
-        let app = Self::parse();
+        let Self { config, command } = Self::parse();
 
         // Log verbosity is controlled by RUST_LOG (for example `RUST_LOG=debug`),
         // defaulting to `info`. Logs go to stderr so stdout stays clean for
@@ -55,11 +80,10 @@ impl SeederApp {
             .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
             .init();
 
-        let config =
-            SeederConfig::load_with_env(app.config).wrap_err("failed to load configuration")?;
-
-        match app.command {
+        match command {
             Commands::Start => {
+                let config =
+                    SeederConfig::load_with_env(config).wrap_err("failed to load configuration")?;
                 info!("Starting zeeder with config: {config:?}");
 
                 if let Some(metrics_config) = &config.metrics {
@@ -69,12 +93,42 @@ impl SeederApp {
                 crate::seeder::run(config).await?;
             }
             Commands::PrintConfig => {
+                let config =
+                    SeederConfig::load_with_env(config).wrap_err("failed to load configuration")?;
                 let rendered =
                     toml::to_string_pretty(&config).wrap_err("failed to render config as TOML")?;
                 let mut stdout = std::io::stdout().lock();
                 stdout
                     .write_all(rendered.as_bytes())
                     .wrap_err("failed to write config to stdout")?;
+            }
+            Commands::AttestActivation {
+                network,
+                cache_dir,
+                activation_height,
+                confirmation_height,
+                minimum_protocol_version,
+            } => {
+                let zcash_network = network.to_zebra();
+                let cache_dir = zebra_network::config::CacheDir::custom_path(cache_dir);
+                let path = activation::attest_confirmation(
+                    &cache_dir,
+                    &zcash_network,
+                    activation_height,
+                    confirmation_height,
+                    minimum_protocol_version,
+                )
+                .await
+                .wrap_err("failed to persist operator activation attestation")?;
+
+                info!(
+                    network = network.label(),
+                    path = %path.display(),
+                    activation_height,
+                    confirmation_height,
+                    minimum_protocol_version,
+                    "persisted explicit operator activation attestation"
+                );
             }
         }
 
@@ -103,6 +157,10 @@ mod tests {
         assert!(
             subcommands.contains(&"print-config"),
             "should have 'print-config'"
+        );
+        assert!(
+            subcommands.contains(&"attest-activation"),
+            "should have 'attest-activation'"
         );
     }
 
@@ -156,6 +214,36 @@ mod tests {
     fn parses_print_config_subcommand() -> TestResult {
         let app = SeederApp::try_parse_from(["zeeder", "print-config"])?;
         assert!(matches!(app.command, Commands::PrintConfig));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_attest_activation_subcommand() -> TestResult {
+        let app = SeederApp::try_parse_from([
+            "zeeder",
+            "attest-activation",
+            "--network",
+            "testnet",
+            "--cache-dir",
+            "/cache/zebra",
+            "--activation-height",
+            "4134000",
+            "--confirmation-height",
+            "4135000",
+            "--minimum-protocol-version",
+            "170160",
+        ])?;
+
+        assert!(matches!(
+            app.command,
+            Commands::AttestActivation {
+                network: ZcashNetwork::Testnet,
+                cache_dir,
+                activation_height: 4_134_000,
+                confirmation_height: 4_135_000,
+                minimum_protocol_version: 170_160,
+            } if cache_dir == std::path::Path::new("/cache/zebra")
+        ));
         Ok(())
     }
 

@@ -38,7 +38,19 @@ pub(crate) struct SeederConfig {
 }
 
 /// Zcash network choices the seeder can crawl and serve.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    clap::ValueEnum,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ZcashNetwork {
     /// The production Zcash network.

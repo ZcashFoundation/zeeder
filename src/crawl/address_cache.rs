@@ -4,12 +4,15 @@ use chrono::Utc;
 use metrics::{counter, gauge};
 use rand::{rng, seq::SliceRandom};
 use tokio::sync::watch;
-use zebra_chain::parameters::Network;
-use zebra_network::{AddressBook, PeerSocketAddr};
+use zebra_chain::{chain_tip::ChainTip, parameters::Network};
+use zebra_network::{AddressBook, PeerSocketAddr, Version};
 
 use crate::{
     config::ZcashNetwork,
-    crawl::servability::{UnservableReason, classify_peer},
+    crawl::{
+        chain_tip::SeederChainTip,
+        servability::{UnservableReason, classify_peer},
+    },
     metrics::{
         ADDR_FAMILY_IPV4, ADDR_FAMILY_IPV6, LABEL_ADDR_FAMILY, LABEL_NETWORK, LABEL_REASON,
         MUTEX_POISONING_TOTAL, PEERS_KNOWN, PEERS_SERVABLE, PEERS_UNSERVABLE,
@@ -48,6 +51,8 @@ impl ServablePeers {
 pub(crate) fn spawn(
     address_book: Arc<std::sync::Mutex<AddressBook>>,
     network: ZcashNetwork,
+    tip: SeederChainTip,
+    target_version: Version,
 ) -> watch::Receiver<ServablePeers> {
     let (servable_peers_sender, servable_peers_receiver) = watch::channel(ServablePeers::default());
 
@@ -61,6 +66,8 @@ pub(crate) fn spawn(
             tokio::time::sleep(CACHE_REFRESH_INTERVAL).await;
             refresh_count = refresh_count.wrapping_add(1);
             let should_log_status = refresh_count.is_multiple_of(CRAWLER_STATUS_LOG_REFRESHES);
+            let minimum_version =
+                Version::min_remote_for_height(&zcash_network, tip.best_tip_height());
 
             let servable_peers = {
                 let guard = match address_book.lock() {
@@ -75,7 +82,14 @@ pub(crate) fn spawn(
                         poisoned.into_inner()
                     }
                 };
-                servable_peers(&guard, &zcash_network, network_label, should_log_status)
+                servable_peers(
+                    &guard,
+                    &zcash_network,
+                    minimum_version,
+                    target_version,
+                    network_label,
+                    should_log_status,
+                )
             };
 
             if servable_peers_sender.send(servable_peers).is_err() {
@@ -91,9 +105,9 @@ pub(crate) fn spawn(
 /// Classify every peer in the book, publish servable and per-reason unservable
 /// counts as gauges, and return a shuffled, capped set of servable addresses.
 ///
-/// Shuffling the full servable set (rather than a fixed-size prefix) before
-/// truncating gives every servable peer an equal chance of being served, which
-/// matters for even load distribution and sybil resistance.
+/// Peers at the compiled target version are served before peers at the previous
+/// admitted floor. Each tier is shuffled before truncation so peers within the
+/// same tier rotate evenly.
 #[allow(
     clippy::cast_precision_loss,
     reason = "gauge values are peer counts; f64 precision loss is irrelevant"
@@ -101,34 +115,46 @@ pub(crate) fn spawn(
 fn servable_peers(
     book: &AddressBook,
     network: &Network,
+    minimum_version: Version,
+    target_version: Version,
     network_label: &'static str,
     should_log_status: bool,
 ) -> ServablePeers {
     let now = Utc::now();
 
-    let mut ipv4 = Vec::new();
-    let mut ipv6 = Vec::new();
+    let mut target_ipv4 = Vec::new();
+    let mut fallback_ipv4 = Vec::new();
+    let mut target_ipv6 = Vec::new();
+    let mut fallback_ipv6 = Vec::new();
     let mut unservable: HashMap<UnservableReason, usize> = HashMap::new();
 
     for meta in book.peers() {
-        match classify_peer(&meta, now, network) {
+        match classify_peer(&meta, now, network, minimum_version) {
             Ok(()) => {
                 let addr = meta.addr();
-                if addr.ip().is_ipv4() {
-                    ipv4.push(addr);
-                } else {
-                    ipv6.push(addr);
+                let is_target_version = meta
+                    .negotiated_version()
+                    .is_some_and(|version| version >= target_version);
+
+                match (addr.ip().is_ipv4(), is_target_version) {
+                    (true, true) => target_ipv4.push(addr),
+                    (true, false) => fallback_ipv4.push(addr),
+                    (false, true) => target_ipv6.push(addr),
+                    (false, false) => fallback_ipv6.push(addr),
                 }
             }
             Err(reason) => *unservable.entry(reason).or_default() += 1,
         }
     }
 
+    let servable_ipv4 = target_ipv4.len() + fallback_ipv4.len();
+    let servable_ipv6 = target_ipv6.len() + fallback_ipv6.len();
+
     gauge!(PEERS_KNOWN, LABEL_NETWORK => network_label).set(book.len() as f64);
     gauge!(PEERS_SERVABLE, LABEL_NETWORK => network_label, LABEL_ADDR_FAMILY => ADDR_FAMILY_IPV4)
-        .set(ipv4.len() as f64);
+        .set(servable_ipv4 as f64);
     gauge!(PEERS_SERVABLE, LABEL_NETWORK => network_label, LABEL_ADDR_FAMILY => ADDR_FAMILY_IPV6)
-        .set(ipv6.len() as f64);
+        .set(servable_ipv6 as f64);
     for reason in UnservableReason::ALL {
         gauge!(PEERS_UNSERVABLE, LABEL_NETWORK => network_label, LABEL_REASON => reason.label())
             .set(unservable.get(&reason).copied().unwrap_or(0) as f64);
@@ -138,22 +164,30 @@ fn servable_peers(
         tracing::info!(
             network = network_label,
             total = book.len(),
-            servable_v4 = ipv4.len(),
-            servable_v6 = ipv6.len(),
+            servable_v4 = servable_ipv4,
+            servable_v6 = servable_ipv6,
+            target_version_v4 = target_ipv4.len(),
+            target_version_v6 = target_ipv6.len(),
             "crawler status"
         );
     }
 
-    let mut rng = rng();
-    ipv4.shuffle(&mut rng);
-    ipv4.truncate(MAX_DNS_RESPONSE_PEERS);
-    ipv6.shuffle(&mut rng);
-    ipv6.truncate(MAX_DNS_RESPONSE_PEERS);
-
     ServablePeers {
-        ipv4: ipv4.into(),
-        ipv6: ipv6.into(),
+        ipv4: shuffled_version_preferred_peers(target_ipv4, fallback_ipv4).into(),
+        ipv6: shuffled_version_preferred_peers(target_ipv6, fallback_ipv6).into(),
     }
+}
+
+fn shuffled_version_preferred_peers(
+    mut target_version: Vec<PeerSocketAddr>,
+    mut fallback_version: Vec<PeerSocketAddr>,
+) -> Vec<PeerSocketAddr> {
+    let mut rng = rng();
+    target_version.shuffle(&mut rng);
+    fallback_version.shuffle(&mut rng);
+    target_version.append(&mut fallback_version);
+    target_version.truncate(MAX_DNS_RESPONSE_PEERS);
+    target_version
 }
 
 #[cfg(test)]
@@ -188,12 +222,28 @@ mod tests {
         services: PeerServices,
         is_inbound: bool,
     ) {
+        update_connected_peer_with_version(
+            book,
+            addr,
+            services,
+            is_inbound,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+        );
+    }
+
+    fn update_connected_peer_with_version(
+        book: &mut AddressBook,
+        addr: PeerSocketAddr,
+        services: PeerServices,
+        is_inbound: bool,
+        version: Version,
+    ) {
         book.update(MetaAddr::new_connected(
             addr,
             &services,
             is_inbound,
             TEST_USER_AGENT.to_string(),
-            CURRENT_NETWORK_PROTOCOL_VERSION,
+            version,
         ));
     }
 
@@ -217,7 +267,14 @@ mod tests {
         book.update(MetaAddr::new_initial_peer(peer([1, 2, 3, 4], 8233)));
         assert_eq!(book.len(), 1, "the peer should be in the book");
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "never-handshaked peers must not be served"
@@ -235,9 +292,42 @@ mod tests {
             false,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         let served: Vec<IpAddr> = peers.ipv4.iter().map(|p| p.ip()).collect();
         assert_eq!(served, vec![IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4))]);
+    }
+
+    #[test]
+    fn peer_admitted_before_activation_is_removed_by_the_new_floor() {
+        let mut book = empty_book();
+        book.update(MetaAddr::new_connected(
+            peer([1, 2, 3, 4], 8233),
+            &PeerServices::NODE_NETWORK,
+            false,
+            TEST_USER_AGENT.to_string(),
+            zebra_network::Version(170_150),
+        ));
+
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            zebra_network::Version(170_160),
+            zebra_network::Version(170_160),
+            "mainnet",
+            false,
+        );
+
+        assert!(
+            peers.ipv4.is_empty() && peers.ipv6.is_empty(),
+            "a cached handshake below the raised floor must stop being served"
+        );
     }
 
     #[test]
@@ -250,7 +340,14 @@ mod tests {
             false,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "a recently-live non-full-node peer must not be served"
@@ -267,7 +364,14 @@ mod tests {
             true,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "an inbound peer must not be served"
@@ -293,7 +397,14 @@ mod tests {
             "the peer should carry the sub-ban misbehavior score"
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         assert!(
             peers.ipv4.is_empty() && peers.ipv6.is_empty(),
             "a misbehaving peer must not be served"
@@ -312,10 +423,108 @@ mod tests {
             false,
         );
 
-        let peers = servable_peers(&book, &Network::Mainnet, "mainnet", false);
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            CURRENT_NETWORK_PROTOCOL_VERSION,
+            "mainnet",
+            false,
+        );
         assert!(
             peers.ipv4.is_empty(),
             "peers on a non-default port must not be served"
+        );
+    }
+
+    #[test]
+    fn target_version_peers_fill_dns_responses_before_fallback_peers() {
+        let mut book = empty_book();
+        let previous_version = Version(170_150);
+        let target_version = Version(170_160);
+
+        for host in 1..=30 {
+            update_connected_peer_with_version(
+                &mut book,
+                peer([20, 1, 1, host], 8233),
+                PeerServices::NODE_NETWORK,
+                false,
+                target_version,
+            );
+            update_connected_peer_with_version(
+                &mut book,
+                peer([30, 1, 1, host], 8233),
+                PeerServices::NODE_NETWORK,
+                false,
+                previous_version,
+            );
+        }
+
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            previous_version,
+            target_version,
+            "mainnet",
+            false,
+        );
+
+        assert_eq!(peers.ipv4.len(), MAX_DNS_RESPONSE_PEERS);
+        assert!(
+            peers.ipv4.iter().all(|addr| match addr.ip() {
+                IpAddr::V4(ip) => ip.octets()[0] == 20,
+                IpAddr::V6(_) => false,
+            }),
+            "a full target-version tier must exclude fallback peers from the response"
+        );
+    }
+
+    #[test]
+    fn fallback_peers_top_up_a_sparse_target_version_tier() {
+        let mut book = empty_book();
+        let previous_version = Version(170_150);
+        let target_version = Version(170_160);
+
+        for host in 1..=5 {
+            update_connected_peer_with_version(
+                &mut book,
+                peer([20, 1, 1, host], 8233),
+                PeerServices::NODE_NETWORK,
+                false,
+                target_version,
+            );
+        }
+        for host in 1..=25 {
+            update_connected_peer_with_version(
+                &mut book,
+                peer([30, 1, 1, host], 8233),
+                PeerServices::NODE_NETWORK,
+                false,
+                previous_version,
+            );
+        }
+
+        let peers = servable_peers(
+            &book,
+            &Network::Mainnet,
+            previous_version,
+            target_version,
+            "mainnet",
+            false,
+        );
+        let target_version_count = peers
+            .ipv4
+            .iter()
+            .filter(|addr| match addr.ip() {
+                IpAddr::V4(ip) => ip.octets()[0] == 20,
+                IpAddr::V6(_) => false,
+            })
+            .count();
+
+        assert_eq!(peers.ipv4.len(), MAX_DNS_RESPONSE_PEERS);
+        assert_eq!(
+            target_version_count, 5,
+            "all available target-version peers must be retained before fallback top-up"
         );
     }
 

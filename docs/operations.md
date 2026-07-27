@@ -392,7 +392,7 @@ reset/reboot/roll resumes the crawler from its last known peers instead of cold.
 A roll updates one VM at a time. Before it moves to the next VM, it digs both
 zones over UDP and TCP against the VM it just updated. Mainnet is hard-gated: if
 the node is not serving mainnet over both UDP and TCP the roll aborts. Testnet is
-soft-gated: because the NU6.3 protocol floor makes testnet servability
+soft-gated: because protocol-floor transitions make testnet servability
 network-dependent, a freshly reset crawler can sit at `servable=0` for a while
 while mainnet is healthy, so a cold testnet only warns and the roll continues.
 `ns1` is the oldest VM and rolls last. Because the roll stops at the first mainnet
@@ -599,9 +599,12 @@ distinguishable.
 | Metric | Type | Labels | Description | Alert If |
 |--------|------|--------|-------------|----------|
 | `zeeder_peers_servable` | Gauge | `network=mainnet\|testnet`, `addr_family=v4\|v6` | Servable peers (recently-live, current-version, outbound, clean) | < 10 |
-| `zeeder_peers_unservable` | Gauge | `network=mainnet\|testnet`, `reason=not_routable\|wrong_port\|not_recently_live\|not_full_node\|inbound\|misbehaving` | Unservable peers, by reason | - |
+| `zeeder_peers_unservable` | Gauge | `network=mainnet\|testnet`, `reason=not_routable\|wrong_port\|not_recently_live\|outdated_version\|not_full_node\|inbound\|misbehaving` | Unservable peers, by reason | - |
 | `zeeder_peers_known` | Gauge | `network=mainnet\|testnet` | Total peers in the address book | - |
 | `zeeder_min_protocol_version` | Gauge | `network=mainnet\|testnet` | Enforced protocol-version floor | changes only at a network upgrade |
+| `zeeder_activation_ready_groups` | Gauge | `network=mainnet\|testnet` | Groups qualifying in the latest in-process activation sweep | below 75% of total after confirmation height |
+| `zeeder_activation_total_groups` | Gauge | `network=mainnet\|testnet` | Groups sampled in the latest in-process activation sweep | < 12 after confirmation height |
+| `zeeder_activation_qualifying_sweeps` | Gauge | `network=mainnet\|testnet` | Consecutive qualifying in-process activation sweeps | remains < 3 after confirmation height |
 | `zeeder_build_info` | Gauge | `version`, `git_sha`, `network` | Build and network identification | - |
 | `zeeder_mutex_poisoning_total` | Counter | `network=mainnet\|testnet` | Mutex poisoning events | > 0 |
 | `zeeder_dns_rate_limited_total` | Counter | - | Rate-limited queries | Spike indicates attack |
@@ -791,8 +794,9 @@ docker compose -f compose.yml up -d
 ```
 
 A Zebra network-upgrade release needs nothing beyond replacing the binary or
-image. The [network upgrade runbook](network-upgrades.md) covers verification
-and the expected servable-peer dip.
+image while preserving the cache. The new target does not raise the floor at
+deployment time; the [network upgrade runbook](network-upgrades.md) covers
+observed activation, verification, and recovery.
 
 ### Cache Persistence
 
@@ -801,7 +805,11 @@ and the expected servable-peer dip.
 - Bare-metal processes without `XDG_CACHE_HOME` use `~/.cache/zebra/network/`.
 - Docker sets `XDG_CACHE_HOME=/cache`, so the caches live under
   `/cache/zebra/network/`.
-- Persisting the caches speeds up restart, but deleting them is safe.
+- The same directory stores `mainnet.activation` and `testnet.activation`
+  confirmation records. Persist it so a confirmed floor remains monotonic
+  across restarts and fleet rolls.
+- Deleting the cache is safe, but Zeeder returns to the previous floor and
+  observes the compiled activation again before recreating its confirmation.
 
 ## Capacity Planning
 

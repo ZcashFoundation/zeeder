@@ -150,6 +150,8 @@ mod tests {
             "docs/adr/0003-rate-limiting.md",
             "docs/adr/0004-peer-servability.md",
             "docs/adr/0005-multi-network-topology.md",
+            "docs/adr/0006-image-identity-and-fleet-delivery.md",
+            "docs/adr/0007-observed-network-upgrade-activation.md",
         ];
 
         for doc in docs {

@@ -1,18 +1,18 @@
 //! Peer servability: whether a crawled peer should be served to a bootstrapping
 //! node.
 //!
-//! A peer is servable only when zebra-network has recently handshaked it (which
-//! proves it passed the protocol-version floor), it advertises the full-node
-//! `NODE_NETWORK` service, its address is routable on the network's default
-//! port, it was not recorded from an inbound connection, and it has no
-//! misbehavior score. The handshake enforces the version floor but not
-//! `NODE_NETWORK`, so the service is checked here.
+//! A peer is servable only when zebra-network has recently handshaked it, its
+//! negotiated version satisfies the current dynamic floor, it advertises the
+//! full-node `NODE_NETWORK` service, its address is routable on the network's
+//! default port, it was not recorded from an inbound connection, and it has no
+//! misbehavior score. Rechecking the negotiated version here prevents peers
+//! admitted before an observed activation from remaining in DNS responses.
 
 use std::net::IpAddr;
 
 use chrono::{DateTime, Utc};
 use zebra_chain::parameters::Network;
-use zebra_network::types::MetaAddr;
+use zebra_network::{Version, types::MetaAddr};
 
 /// Why a peer is not servable. Each variant maps to a stable `reason` metric label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -23,6 +23,8 @@ pub(crate) enum UnservableReason {
     WrongPort,
     /// No recent successful handshake (gossiped, failed, or stale).
     NotRecentlyLive,
+    /// Last handshake negotiated a protocol version below the current floor.
+    OutdatedVersion,
     /// Does not advertise the full-node (`NODE_NETWORK`) service.
     NotFullNode,
     /// Recorded from an inbound peer connection.
@@ -33,10 +35,11 @@ pub(crate) enum UnservableReason {
 
 impl UnservableReason {
     /// Every reason, so callers can reset each per-reason gauge on a refresh.
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::NotRoutable,
         Self::WrongPort,
         Self::NotRecentlyLive,
+        Self::OutdatedVersion,
         Self::NotFullNode,
         Self::Inbound,
         Self::Misbehaving,
@@ -48,6 +51,7 @@ impl UnservableReason {
             Self::NotRoutable => "not_routable",
             Self::WrongPort => "wrong_port",
             Self::NotRecentlyLive => "not_recently_live",
+            Self::OutdatedVersion => "outdated_version",
             Self::NotFullNode => "not_full_node",
             Self::Inbound => "inbound",
             Self::Misbehaving => "misbehaving",
@@ -61,6 +65,8 @@ struct PeerAttributes {
     port: u16,
     default_port: u16,
     is_recently_live: bool,
+    negotiated_version: Option<Version>,
+    minimum_version: Version,
     advertises_node_network: bool,
     is_inbound: bool,
     misbehavior_score: u32,
@@ -79,6 +85,12 @@ fn classify(peer: PeerAttributes) -> Result<(), UnservableReason> {
     if !peer.is_recently_live {
         return Err(UnservableReason::NotRecentlyLive);
     }
+    if peer
+        .negotiated_version
+        .is_none_or(|version| version < peer.minimum_version)
+    {
+        return Err(UnservableReason::OutdatedVersion);
+    }
     if !peer.advertises_node_network {
         return Err(UnservableReason::NotFullNode);
     }
@@ -96,6 +108,7 @@ pub(crate) fn classify_peer(
     meta: &MetaAddr,
     now: DateTime<Utc>,
     network: &Network,
+    minimum_version: Version,
 ) -> Result<(), UnservableReason> {
     let addr = meta.addr();
     classify(PeerAttributes {
@@ -103,6 +116,8 @@ pub(crate) fn classify_peer(
         port: addr.port(),
         default_port: network.default_port(),
         is_recently_live: meta.was_recently_live(now),
+        negotiated_version: meta.negotiated_version(),
+        minimum_version,
         advertises_node_network: meta.last_known_info_is_valid_for_outbound(network),
         is_inbound: meta.is_inbound(),
         misbehavior_score: meta.misbehavior(),
@@ -128,6 +143,8 @@ mod tests {
             port: DEFAULT_PORT,
             default_port: DEFAULT_PORT,
             is_recently_live: true,
+            negotiated_version: Some(Version(170_160)),
+            minimum_version: Version(170_160),
             advertises_node_network: true,
             is_inbound: false,
             misbehavior_score: 0,
@@ -186,6 +203,15 @@ mod tests {
     }
 
     #[test]
+    fn peer_below_the_dynamic_protocol_floor_is_rejected() {
+        let mut peer = servable_peer();
+        peer.negotiated_version = Some(Version(170_150));
+        peer.minimum_version = Version(170_160);
+
+        assert_eq!(classify(peer), Err(UnservableReason::OutdatedVersion));
+    }
+
+    #[test]
     fn inbound_peer_is_rejected() {
         let mut peer = servable_peer();
         peer.is_inbound = true;
@@ -219,6 +245,6 @@ mod tests {
         let labels: Vec<&str> = UnservableReason::ALL.iter().map(|r| r.label()).collect();
         let unique: HashSet<&str> = labels.iter().copied().collect();
         assert_eq!(labels.len(), unique.len(), "reason labels must be unique");
-        assert_eq!(unique.len(), 6, "all reasons must have a label");
+        assert_eq!(unique.len(), 7, "all reasons must have a label");
     }
 }
