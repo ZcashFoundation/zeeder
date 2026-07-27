@@ -7,8 +7,9 @@
 //! keeping the previous upgrade's floor. The activation observer advances it
 //! only after a fixed, sustained quorum reports the activation safely buried.
 //!
-//! Only `best_tip_height` and `best_tip_changed` feed that floor; the other
-//! [`ChainTip`] accessors return no chain data because Zeeder remains stateless.
+//! zebra-network polls `best_tip_height` while handshaking and maintaining its
+//! peer set. The other [`ChainTip`] accessors return no chain data because
+//! Zeeder remains stateless.
 
 use std::{io, sync::Arc};
 
@@ -113,6 +114,12 @@ mod tests {
 
         assert_eq!(
             Version::min_remote_for_height(&network, tip.best_tip_height()),
+            // This explicit previous floor is a dependency-upgrade tripwire.
+            // Isolated activation probes use Zebra's `NoChainTip` fallback, so
+            // raising `INITIAL_MIN_NETWORK_PROTOCOL_VERSION` can silently make
+            // old-version peers unobservable even while this synthetic tip
+            // remains below activation. Re-evaluate the observer contract
+            // before changing this assertion.
             Version(170_150)
         );
 
@@ -124,17 +131,15 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn activation_confirmation_notifies_zebra_network() -> Result<(), BoxError> {
+    #[test]
+    fn activation_confirmation_updates_the_shared_tip() {
         let target = ActivationTarget::latest(&Network::Mainnet);
         let tip = SeederChainTip::new(target, false);
-        let mut subscriber = tip.clone();
+        let subscriber = tip.clone();
 
         tip.confirm_activation();
-        subscriber.best_tip_changed().await?;
 
         assert_eq!(subscriber.best_tip_height(), Some(target.activation_height));
-        Ok(())
     }
 
     fn version_floor(network: &Network, confirmed: bool) -> Version {

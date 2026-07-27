@@ -104,6 +104,7 @@ zeeder/
 - CLI structure with clap
 - Config loading orchestration
 - Metrics initialization and command dispatch
+- Exact-target operator attestation for already-activated bootstrap migrations
 
 ### Runtime Naming Convention
 

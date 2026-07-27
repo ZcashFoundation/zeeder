@@ -33,7 +33,10 @@ use zebra_network::{
 use crate::{
     config::ZcashNetwork,
     crawl::{chain_tip::SeederChainTip, servability::classify_peer},
-    metrics::{LABEL_NETWORK, MIN_PROTOCOL_VERSION},
+    metrics::{
+        ACTIVATION_QUALIFYING_SWEEPS, ACTIVATION_READY_GROUPS, ACTIVATION_TOTAL_GROUPS,
+        LABEL_NETWORK, MIN_PROTOCOL_VERSION,
+    },
 };
 
 /// Minimum independent network groups required for an activation decision.
@@ -137,6 +140,41 @@ pub(crate) async fn load_confirmation(path: Option<&Path>, target: ActivationTar
     }
 }
 
+/// Persist an explicit operator attestation for the exact compiled target.
+///
+/// All asserted values must match Zebra's compiled target. This prevents a
+/// stale runbook command from confirming a different dependency-provided
+/// activation, but the operator remains responsible for independently
+/// verifying that the network has already activated.
+pub(crate) async fn attest_confirmation(
+    cache_dir: &CacheDir,
+    network: &Network,
+    activation_height: u32,
+    confirmation_height: u32,
+    minimum_protocol_version: u32,
+) -> io::Result<PathBuf> {
+    let target = ActivationTarget::latest(network);
+    let asserted_record = format!(
+        "activation_height={activation_height}\nconfirmation_height={confirmation_height}\nminimum_protocol_version={minimum_protocol_version}\n"
+    );
+
+    if !target.matches_confirmation_record(&asserted_record) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "attestation does not match compiled target: expected activation_height={}, confirmation_height={}, minimum_protocol_version={}",
+                target.activation_height.0, target.confirmation_height.0, target.required_version.0
+            ),
+        ));
+    }
+
+    let path = confirmation_path(cache_dir, network).ok_or_else(|| {
+        io::Error::other("zebra-network cache is disabled; no durable confirmation path")
+    })?;
+    persist_confirmation(Some(path.clone()), target).await?;
+    Ok(path)
+}
+
 /// Spawn the independent activation observer for one network.
 pub(crate) fn spawn(
     address_book: Arc<Mutex<AddressBook>>,
@@ -147,12 +185,14 @@ pub(crate) fn spawn(
     confirmation_path: Option<PathBuf>,
 ) -> ActivationObserver {
     ActivationObserver(tokio::spawn(async move {
+        let network_label = network.label();
+        publish_observation_metrics(network_label, SweepEvidence::default(), 0);
+
         if tip.is_activation_confirmed() {
             return;
         }
 
         let zcash_network = network.to_zebra();
-        let network_label = network.label();
         let sweep_interval =
             NetworkUpgrade::target_spacing_for_height(&zcash_network, target.activation_height)
                 .to_std()
@@ -177,12 +217,15 @@ pub(crate) fn spawn(
             )
             .await;
             let confirmed = gate.observe(evidence);
+            let qualifying_sweeps = gate.qualifying_sweeps();
+
+            publish_observation_metrics(network_label, evidence, qualifying_sweeps);
 
             tracing::info!(
                 network = network_label,
                 total_groups = evidence.total_groups,
                 ready_groups = evidence.ready_groups,
-                qualifying_sweeps = gate.qualifying_sweeps(),
+                qualifying_sweeps,
                 required_groups = MIN_NETWORK_GROUPS,
                 maximum_groups = MAX_NETWORK_GROUPS_PER_SWEEP,
                 required_sweeps = REQUIRED_QUALIFYING_SWEEPS,
@@ -223,10 +266,27 @@ pub(crate) fn spawn(
 }
 
 /// One completed observer sweep, reduced to the values used by the gate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct SweepEvidence {
     total_groups: usize,
     ready_groups: usize,
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "activation group counts are bounded at 64 and exactly representable as f64"
+)]
+fn publish_observation_metrics(
+    network_label: &'static str,
+    evidence: SweepEvidence,
+    qualifying_sweeps: u8,
+) {
+    gauge!(ACTIVATION_TOTAL_GROUPS, LABEL_NETWORK => network_label)
+        .set(evidence.total_groups as f64);
+    gauge!(ACTIVATION_READY_GROUPS, LABEL_NETWORK => network_label)
+        .set(evidence.ready_groups as f64);
+    gauge!(ACTIVATION_QUALIFYING_SWEEPS, LABEL_NETWORK => network_label)
+        .set(f64::from(qualifying_sweeps));
 }
 
 /// Fixed-quorum activation state machine.
@@ -387,7 +447,7 @@ mod tests {
 
     use super::*;
     use zebra_chain::{block::Height, parameters::Network};
-    use zebra_network::Version;
+    use zebra_network::{Version, config::CacheDir};
 
     #[test]
     fn half_ready_never_confirms() {
@@ -533,6 +593,50 @@ mod tests {
         persist_confirmation(Some(path.clone()), target).await?;
         assert!(load_confirmation(Some(&path), target).await);
         std::fs::remove_file(path)?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn operator_attestation_rejects_a_mismatched_compiled_target() {
+        let cache_dir = CacheDir::custom_path(std::env::temp_dir());
+        let result = attest_confirmation(
+            &cache_dir,
+            &Network::new_default_testnet(),
+            4_134_000,
+            4_135_000,
+            170_150,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+    }
+
+    #[tokio::test]
+    async fn operator_attestation_persists_the_exact_compiled_target() -> Result<(), Box<dyn Error>>
+    {
+        let target = ActivationTarget::latest(&Network::new_default_testnet());
+        let cache_root = std::env::temp_dir().join(format!(
+            "zeeder-attestation-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_micros()
+        ));
+        let cache_dir = CacheDir::custom_path(&cache_root);
+
+        let path = attest_confirmation(
+            &cache_dir,
+            &Network::new_default_testnet(),
+            target.activation_height.0,
+            target.confirmation_height.0,
+            target.required_version.0,
+        )
+        .await?;
+
+        assert!(load_confirmation(Some(&path), target).await);
+        std::fs::remove_dir_all(cache_root)?;
 
         Ok(())
     }

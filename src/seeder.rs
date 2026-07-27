@@ -148,7 +148,12 @@ async fn spawn_network_crawler(
     )
     .await;
 
-    let servable_peers = address_cache::spawn(address_book.clone(), network, tip.clone());
+    let servable_peers = address_cache::spawn(
+        address_book.clone(),
+        network,
+        tip.clone(),
+        activation_target.required_version,
+    );
     let activation_observer = activation::spawn(
         address_book,
         network,

@@ -112,8 +112,9 @@ sequenceDiagram
 
 **How it works:**
 - Background task updates cache every 5 seconds
-- Cache contains pre-filtered, pre-shuffled IPv4 and IPv6 lists
+- Cache contains pre-filtered IPv4 and IPv6 lists, shuffled within compiled-target and fallback version tiers
 - Each refresh reads the current observed protocol floor, so a floor change removes stale negotiated versions
+- Each address-family response prefers compiled-target peers and uses previous-floor peers only as fallback
 - DNS queries read from cache without locking (via tokio `watch` channel)
 - Eliminates lock contention during high query load
 
@@ -121,7 +122,7 @@ sequenceDiagram
 
 The activation observer separates a compiled upgrade target from proof that the network has reached it. Each sweep uniformly selects at most 64 IPv4 `/16` or IPv6 `/32` groups from the crawler's own address book, chooses 1 recently live peer per selected group, and performs isolated handshakes that accept the previous protocol floor. At least 75% of 12 or more sampled groups must report the target version and a height beyond the activation plus maximum reorganization depth for 3 consecutive sweeps.
 
-After the final qualifying sweep, the observer persists the exact decision and advances `SeederChainTip`. zebra-network receives the height change through its `ChainTip` monitor, while the 5-second servable-peer refresh applies the same new minimum to cached handshakes. [ADR 0007](adr/0007-observed-network-upgrade-activation.md) defines the trust model, thresholds, and failure behavior.
+After the final qualifying sweep, the observer persists the exact decision and advances `SeederChainTip`. zebra-network's `MinimumPeerVersion` reads `best_tip_height()` while handshaking and polling its peer set, and the 5-second servable-peer refresh independently applies the same new minimum to cached handshakes. [ADR 0007](adr/0007-observed-network-upgrade-activation.md) defines the trust model, thresholds, and failure behavior.
 
 ### Crawler Status and Metrics
 

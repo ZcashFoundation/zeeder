@@ -18,7 +18,7 @@ Changing zone routing or per-zone answer behavior is a DNS contract change. Upda
 
 ## Address-Family Split
 
-The servable peer cache keeps IPv4 and IPv6 peers in separate lists. A queries read only the IPv4 list, and AAAA queries read only the IPv6 list. Each family is shuffled independently and capped independently, so a sparse IPv6 set does not reduce IPv4 answers.
+The servable peer cache keeps IPv4 and IPv6 peers in separate lists. A queries read only the IPv4 list, and AAAA queries read only the IPv6 list. Within each family, peers at the newest compiled protocol version are shuffled and served before separately shuffled peers at the previous admitted floor. Each family is capped independently, so a sparse IPv6 set does not reduce IPv4 answers.
 
 Metrics use the `addr_family` label with the stable values `v4` and `v6`.
 

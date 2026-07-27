@@ -16,16 +16,20 @@ Each crawler starts its `SeederChainTip` immediately below the newest compiled a
 
 - The observer uniformly samples at most 64 available IPv4 `/16` or IPv6 `/32` network groups, then chooses 1 recently live, outbound, full node from each selected group.
 - At least 12 network groups participate in a completed sweep.
-- At least 75% of the sampled groups report a start height at or above the activation height plus Zebra's maximum reorganization depth, negotiate the new protocol version, and advertise `NODE_NETWORK`.
+- At least 75% of the sampled groups report a start height at or above the activation height plus 1,000 blocks, negotiate the new protocol version, and advertise `NODE_NETWORK`.
 - The threshold holds for 3 consecutive sweeps, separated by the target block spacing. A timeout, failed handshake, or nonqualifying response remains in the denominator and counts as not ready.
 
 The observer uses isolated Zcash handshakes whose floor remains at the previous upgrade, which lets it measure both old-version and new-version nodes. It does not use the maximum height, an average height, a decaying threshold, an external application programming interface (API), or a designated node.
 
 Before raising the floor, Zeeder atomically persists an exact record of the activation height, confirmation height, and required protocol version beside zebra-network's peer cache. A restart accepts only a record that exactly matches the compiled target. If the cache is disabled or the record cannot be written, the observer leaves the previous floor in place.
 
+Admission and serving order remain separate decisions. Until the observer confirms activation, peers at the previous protocol floor remain admissible, but each DNS address-family response is filled from peers at the compiled target version first. Previous-version peers are shuffled separately and used only to fill remaining response capacity.
+
 ## Rationale
 
-Network-group voting limits the weight of many addresses from one prefix, while uniform selection prevents prefixes containing more addresses from gaining extra sampling weight. The 64-group cap bounds concurrent handshakes and prevents an attacker-influenced address book from expanding the quorum denominator. The minimum group count prevents a small, internally consistent view from deciding activation, and a fixed 75% threshold requires a supermajority without allowing a stalled minority to block the transition indefinitely. Requiring 3 spaced sweeps rejects brief height spikes and transient partitions, while waiting through the maximum reorganization depth avoids reacting at the activation boundary.
+Network-group voting limits the weight of many addresses from one prefix, while uniform selection prevents prefixes containing more addresses from gaining extra sampling weight. The 64-group cap bounds concurrent handshakes and prevents an attacker-influenced address book from expanding the quorum denominator. The minimum group count prevents a small, internally consistent view from deciding activation, and a fixed 75% threshold requires a supermajority without allowing a stalled minority to block the transition indefinitely. Requiring 3 spaced sweeps rejects brief height spikes and transient partitions.
+
+The 1,000-block delay reuses Zebra's local `MAX_BLOCK_REORG_HEIGHT` defense-in-depth policy; it is not a consensus finality guarantee. At the 75-second target spacing it intentionally leaves the admission floor unchanged for about 20.8 hours after activation. Preferentially serving target-version peers reduces exposure during that window without letting an unauthenticated height report raise the admission floor.
 
 The algorithm treats missing evidence conservatively. Failed and timed-out probes do not disappear from the denominator, and any nonqualifying sweep resets the consecutive-sweep counter. Persistence makes the transition monotonic across ordinary restarts and fleet rolls.
 
@@ -35,9 +39,11 @@ The algorithm treats missing evidence conservatively. Failed and timed-out probe
 - Each Zeeder instance decides independently from the peers it has discovered, so the design adds no node or endpoint dependency.
 - Each observation sweep opens at most 64 concurrent isolated handshakes.
 - The protocol floor can rise later than the chain reaches the confirmation height when the address book lacks 12 groups or fewer than 75% of groups qualify.
+- Before confirmation, DNS responses prefer peers at the target protocol version and use peers at the previous admitted floor only as fallback capacity.
 - After confirmation, the servable-peer cache rechecks each peer's negotiated version against the new floor, which removes handshakes admitted under the previous floor from DNS responses immediately.
-- Peer start heights remain self-reported. An attacker that controls at least 75% of the sampled network groups, or fully eclipses a seeder, can still cause a false confirmation; this design raises the cost of false evidence but cannot authenticate chain work.
-- Operators must persist the cache directory for confirmation to survive a restart. Deleting only the network's `.activation` file and restarting forces a fresh observation without clearing discovered peers.
+- Peer start heights remain self-reported. An attacker that controls at least 75% of the sampled network groups, or fully eclipses a seeder, can still cause a false confirmation; this design raises the cost of false evidence but cannot authenticate chain work. A false confirmation is durable and remains active across restarts until an operator deletes its exact `.activation` record.
+- Operators must persist the cache directory for confirmation to survive a restart. Losing the record or loading a dependency whose compiled target no longer matches it returns the floor to the previous upgrade, even after activation, until fresh observation or an explicit operator attestation confirms the new target.
+- Operators can explicitly attest an already-activated target during a bootstrap migration. The command requires all target fields to match the compiled dependency values, but it deliberately bypasses peer observation and therefore transfers the activation decision to the operator.
 
 ## Alternatives Considered
 

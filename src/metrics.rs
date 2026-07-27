@@ -8,6 +8,9 @@ pub(crate) const PEERS_KNOWN: &str = "zeeder_peers_known";
 pub(crate) const PEERS_SERVABLE: &str = "zeeder_peers_servable";
 pub(crate) const PEERS_UNSERVABLE: &str = "zeeder_peers_unservable";
 pub(crate) const MIN_PROTOCOL_VERSION: &str = "zeeder_min_protocol_version";
+pub(crate) const ACTIVATION_READY_GROUPS: &str = "zeeder_activation_ready_groups";
+pub(crate) const ACTIVATION_TOTAL_GROUPS: &str = "zeeder_activation_total_groups";
+pub(crate) const ACTIVATION_QUALIFYING_SWEEPS: &str = "zeeder_activation_qualifying_sweeps";
 pub(crate) const BUILD_INFO: &str = "zeeder_build_info";
 pub(crate) const MUTEX_POISONING_TOTAL: &str = "zeeder_mutex_poisoning_total";
 pub(crate) const DNS_RATE_LIMITED_TOTAL: &str = "zeeder_dns_rate_limited_total";
@@ -58,6 +61,9 @@ mod tests {
             PEERS_SERVABLE,
             PEERS_UNSERVABLE,
             MIN_PROTOCOL_VERSION,
+            ACTIVATION_READY_GROUPS,
+            ACTIVATION_TOTAL_GROUPS,
+            ACTIVATION_QUALIFYING_SWEEPS,
             BUILD_INFO,
             MUTEX_POISONING_TOTAL,
             DNS_RATE_LIMITED_TOTAL,
