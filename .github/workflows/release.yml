@@ -223,6 +223,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    outputs:
+      pin_sha: ${{ steps.pin.outputs.pin_sha }}
     steps:
       # Check out the default branch, not the release tag: the release event
       # leaves a detached HEAD, and the IMAGE bump must land on top of main.
@@ -234,18 +236,42 @@ jobs:
       # rather than proposed. Its git history stays the deploy ledger, and a
       # rollback is still a revert of this file followed by a roll.
       - name: Commit the published digest
+        id: pin
         env:
           DIGEST: ${{ needs.publish-image.outputs.digest }}
           HUB_IMAGE: ${{ env.HUB_IMAGE }}
           VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
-          printf '%s@%s\n' "${HUB_IMAGE}" "${DIGEST}" > deploy/gcp/IMAGE
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add deploy/gcp/IMAGE
-          git commit -m "deploy: pin fleet to zeeder ${VERSION}"
-          git push origin HEAD:main
+
+          # main can move while the image builds, so rebase onto it rather than
+          # failing the push and skipping the deploy.
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            printf '%s@%s\n' "${HUB_IMAGE}" "${DIGEST}" > deploy/gcp/IMAGE
+
+            # A re-run, or a retry after a partial failure, finds the pin
+            # already correct. That is success, not "nothing to commit".
+            if git diff --quiet -- deploy/gcp/IMAGE; then
+              echo "already pinned to ${DIGEST}"
+              break
+            fi
+
+            git add deploy/gcp/IMAGE
+            git commit -m "deploy: pin fleet to zeeder ${VERSION}"
+            if git push origin HEAD:main; then
+              break
+            fi
+            [ "${attempt}" -lt 3 ] || { echo "::error::could not push the pin after 3 attempts"; exit 1; }
+            echo "push rejected, main moved; retrying"
+          done
+
+          # The deploy rolls this exact commit, so two overlapping releases
+          # cannot roll each other's digest.
+          echo "pin_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
 
   deploy:
     name: Deploy seeders
@@ -257,6 +283,7 @@ jobs:
     with:
       # Stated rather than defaulted: this rolls the production fleet.
       dry_run: false
+      ref: ${{ needs.pin-deploy.outputs.pin_sha }}
 
   build-binaries:
     name: Build binary (${{ matrix.target }})

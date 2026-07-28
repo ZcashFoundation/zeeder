@@ -25,6 +25,10 @@ on:
       only:
         type: string
         default: ""
+      ref:
+        description: Commit to roll. Defaults to main for a manual dispatch.
+        type: string
+        default: main
 
 permissions: {}
 
@@ -41,12 +45,14 @@ jobs:
       contents: read
       id-token: write
     steps:
-      # Always deploy main's committed pin. A release-triggered call runs with
-      # the tag as its ref, whose tree predates the pin that release just
-      # committed, so the ref cannot be inherited here.
+      # Roll a named commit, not whatever main happens to hold when this starts.
+      # A release passes the exact commit it pinned, so two overlapping releases
+      # cannot roll each other's digest; a manual dispatch falls back to main.
+      # The run's own ref is never used: a release-triggered call carries the
+      # tag, whose tree predates the pin.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 #v7.0.0
         with:
-          ref: main
+          ref: ${{ inputs.ref || 'main' }}
           persist-credentials: false
 
       # Materialize and mask before anything can echo these values: the fleet
