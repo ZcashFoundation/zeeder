@@ -13,12 +13,29 @@ on:
         description: Limit the roll to one VM name or ns label (optional)
         type: string
         default: ""
+  # release.yml calls this after it pins the published digest. Calling rather
+  # than firing an event keeps the chain inside one run: a push or release made
+  # with GITHUB_TOKEN does not start a new workflow, so an event-driven chain
+  # would stop here silently.
+  workflow_call:
+    inputs:
+      dry_run:
+        type: boolean
+        default: false
+      only:
+        type: string
+        default: ""
+      ref:
+        description: Commit to roll. Defaults to main for a manual dispatch.
+        type: string
+        default: main
 
 permissions: {}
 
 concurrency:
   group: deploy-seeders
   cancel-in-progress: false
+  queue: max
 
 jobs:
   deploy:
@@ -29,8 +46,14 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # Roll a named commit, not whatever main happens to hold when this starts.
+      # A release passes the exact commit it pinned, so two overlapping releases
+      # cannot roll each other's digest; a manual dispatch falls back to main.
+      # The run's own ref is never used: a release-triggered call carries the
+      # tag, whose tree predates the pin.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 #v7.0.0
         with:
+          ref: ${{ inputs.ref || 'main' }}
           persist-credentials: false
 
       # Materialize and mask before anything can echo these values: the fleet

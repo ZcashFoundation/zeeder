@@ -47,8 +47,10 @@ inventory is operator-held:
   repository carries mechanism and contracts without infrastructure identifiers.
   Its array order is the rolling order: the canary is first and `ns1` is last.
 - `IMAGE` is a single line holding the full image reference pinned by `sha256`
-  digest. Bumping it in a pull request is the deploy event, and its git log is
-  the deploy audit trail.
+  digest. Publishing a full release is the deploy decision; the release workflow
+  commits the published digest here and then rolls, so this file's git log is the
+  deploy audit trail and a revert of it is the rollback. A pre-release publishes
+  artifacts without changing the pin or the fleet.
 - `startup-script.sh.tmpl` is the per-boot host script. It stops
   `systemd-resolved`, applies an iptables `REDIRECT` from `:53` to `:1053` for
   UDP and TCP, and `docker run`s the pinned digest.
@@ -86,9 +88,9 @@ inherits nothing.
 - Release-only publication scopes signing and `id-token` permissions to the one
   workflow that needs them, and every production digest maps to exactly one
   published release.
-- Splitting policy from mechanism makes a deploy a reviewable pull request whose
-  diff is a single digest and whose revert is a one-line rollback, while
-  `seeders.sh` stays free of desired state.
+- Splitting policy from mechanism keeps desired state in one digest-only commit
+  on `main`, gives rollback a one-line revert, and keeps `seeders.sh` free of
+  desired state.
 - DNS serves UDP, so the roll gate digs both the UDP and TCP paths on both zones.
   A gate that watched only TCP would miss the path clients actually use.
 - Fail-closed Cosign verification means an unsigned or mismatched digest cannot
@@ -120,8 +122,6 @@ inherits nothing.
   Federation identity first.
 - A version-bearing health endpoint, so the roll gate can assert the running
   image reference rather than infer it.
-- A `workflow_dispatch` deploy wrapper, added only when a second regular operator
-  needs push-button deploys.
 - Renaming the image to `zfnd/zeeder` and retiring `zfnd/dnsseeder`, tracked in
   issue #55. Docker Hub cannot alias names, so the cutover is deliberate rather
   than incidental.
