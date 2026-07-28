@@ -401,39 +401,52 @@ answering.
 
 ### Deploying a New Image
 
-1. `release.yml` publishes a Cosign-signed image and its `sha256` digest.
-2. A pull request bumps `deploy/gcp/IMAGE` to that digest. The merge is the
-   deploy event, and the file's git history is the audit trail.
-3. An operator runs `deploy/gcp/seeders.sh --roll`. Add `--only <ns>` to roll the
-   canary alone, and `--dry-run` to preview the plan without touching a VM.
-4. The roll runs `cosign verify` on the pinned digest before it touches any VM,
-   so an unsigned or mismatched digest never rolls.
+Publishing a release is the deploy decision. Everything after it is automatic:
+
+1. `release.yml` builds, Cosign-signs, and publishes the image.
+2. It commits the published digest to `deploy/gcp/IMAGE`. That file's git
+   history is the deploy ledger.
+3. It calls the deploy workflow, which rolls the fleet one nameserver at a time.
+4. `cosign verify` runs on the pinned digest before any VM is touched, so an
+   unsigned or mismatched digest never rolls.
 5. `deploy/gcp/seeders.sh --status` is the post-roll check.
 
-Rollback is a `git revert` of `deploy/gcp/IMAGE` followed by another
-`--roll`.
+Rollback is a `git revert` of `deploy/gcp/IMAGE` followed by a roll.
+
+To publish an image without deploying it — a build that should wait for a
+network upgrade, for example — cut it as a **pre-release**. The release workflow
+only runs once a release is published as a full release, so promoting the
+pre-release later is what starts the deploy.
 
 ### CI-driven deploy
 
-The `Deploy seeders` workflow (`.github/workflows/deploy.yml`) runs the same
+The `Deploy seeders` workflow (`.github/workflows/deploy.yml`) runs
 `seeders.sh --roll` from CI, so an operator does not need `gcloud`, `cosign`, or
-the fleet inventory on their laptop. It is `workflow_dispatch` only, with a
-`dry_run` toggle (default on) and an optional `only` input; the local
-`seeders.sh --roll` remains the fallback and is unchanged.
+the fleet inventory on their laptop. `release.yml` calls it, and it also accepts
+a manual dispatch with a `dry_run` toggle (default on) and an optional `only`
+input for rolling a single node. Running `seeders.sh` locally remains the
+fallback and is unchanged.
 
-The run is human-gated twice: the manual dispatch, and the `production`
-environment's required reviewer. Cloud access is keyless, and the fleet
-inventory is injected from a repository variable into a runner-temp file
-(`FLEET_CONF_FILE`) and masked before any step can log it, so no plaintext
-inventory ever lands in the repository or a checkout. It is configuration, not
-a credential — nothing in it grants access, which is decided by IAM — so a
-readable variable keeps it maintainable.
+`release.yml` calls the workflow rather than firing an event at it, because a
+push or release made with `GITHUB_TOKEN` does not start a new workflow run — an
+event-driven chain would stop after the pin, silently. The call keeps the whole
+sequence inside one run.
+
+Cloud access is keyless, and the fleet inventory is injected from a repository
+variable into a runner-temp file (`FLEET_CONF_FILE`) and masked before any step
+can log it, so no plaintext inventory ever lands in the repository or a
+checkout. It is configuration, not a credential — nothing in it grants access,
+which is decided by IAM — so a readable variable keeps it maintainable.
 
 The workflow needs a one-time configuration before it can run: keyless CI
-authentication to the fleet project, the variables referenced by
-`deploy.yml`, and a `production` environment with required reviewers. This is
-repository and cloud admin setup; the specific values are held by the operators.
-Verify with a `dry_run: true` dispatch before a real run.
+authentication to the fleet project, the variables referenced by `deploy.yml`,
+and a `production` environment whose deployment policy admits `main` and version
+tags. This is repository and cloud admin setup; the specific values are held by
+the operators. Verify with a `dry_run: true` dispatch before relying on it.
+
+Nothing pauses for an approval, so the roll's own gates are what protect the
+delegation: a fail-closed preflight, signature verification, and a per-node DNS
+gate that stops at the first nameserver that does not come back.
 
 ### Image Pull Path
 

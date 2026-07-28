@@ -13,6 +13,18 @@ on:
         description: Limit the roll to one VM name or ns label (optional)
         type: string
         default: ""
+  # release.yml calls this after it pins the published digest. Calling rather
+  # than firing an event keeps the chain inside one run: a push or release made
+  # with GITHUB_TOKEN does not start a new workflow, so an event-driven chain
+  # would stop here silently.
+  workflow_call:
+    inputs:
+      dry_run:
+        type: boolean
+        default: false
+      only:
+        type: string
+        default: ""
 
 permissions: {}
 
@@ -29,8 +41,12 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # Always deploy main's committed pin. A release-triggered call runs with
+      # the tag as its ref, whose tree predates the pin that release just
+      # committed, so the ref cannot be inherited here.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 #v7.0.0
         with:
+          ref: main
           persist-credentials: false
 
       # Materialize and mask before anything can echo these values: the fleet

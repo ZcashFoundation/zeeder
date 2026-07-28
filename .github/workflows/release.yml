@@ -216,42 +216,47 @@ jobs:
             --repo "${REPOSITORY}" \
             --signer-workflow "${REPOSITORY}/.github/workflows/release.yml"
 
-  propose-deploy:
-    name: Propose fleet image pin
+  pin-deploy:
+    name: Pin fleet image
     needs: [preflight, publish-image]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
-      pull-requests: write
     steps:
       # Check out the default branch, not the release tag: the release event
       # leaves a detached HEAD, and the IMAGE bump must land on top of main.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 #v7.0.0
         with:
           ref: main
-          persist-credentials: false
 
-      - name: Pin fleet image
+      # Publishing the release is the deploy decision, so the pin is committed
+      # rather than proposed. Its git history stays the deploy ledger, and a
+      # rollback is still a revert of this file followed by a roll.
+      - name: Commit the published digest
         env:
           DIGEST: ${{ needs.publish-image.outputs.digest }}
           HUB_IMAGE: ${{ env.HUB_IMAGE }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
           printf '%s@%s\n' "${HUB_IMAGE}" "${DIGEST}" > deploy/gcp/IMAGE
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add deploy/gcp/IMAGE
+          git commit -m "deploy: pin fleet to zeeder ${VERSION}"
+          git push origin HEAD:main
 
-      - name: Open deploy pull request
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
-        with:
-          base: main
-          branch: deploy/image-${{ needs.preflight.outputs.version }}
-          title: "deploy: pin fleet to zeeder ${{ needs.preflight.outputs.version }}"
-          commit-message: "deploy: pin fleet to zeeder ${{ needs.preflight.outputs.version }}"
-          body: |
-            Pins the GCP fleet deployment image to zeeder ${{ needs.preflight.outputs.version }}.
-            Merging this PR remains a human deployment decision.
-          add-paths: deploy/gcp/IMAGE
-          delete-branch: true
+  deploy:
+    name: Deploy seeders
+    needs: pin-deploy
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy.yml
+    with:
+      # Stated rather than defaulted: this rolls the production fleet.
+      dry_run: false
 
   build-binaries:
     name: Build binary (${{ matrix.target }})
