@@ -4,7 +4,7 @@
 //! routed to the zone whose domain contains the query name; names outside every
 //! zone are REFUSED.
 
-use std::net::IpAddr;
+use std::{collections::BTreeSet, net::IpAddr};
 
 use color_eyre::eyre::{Context, Result, ensure};
 use hickory_proto::{
@@ -61,7 +61,7 @@ pub(crate) struct SeedZone {
 #[derive(Clone)]
 struct ZoneRecords {
     soa: Record,
-    nameserver: Record,
+    nameservers: Vec<Record>,
 }
 
 impl SeedZone {
@@ -71,18 +71,36 @@ impl SeedZone {
         network: ZcashNetwork,
         seed_domain: &str,
         nameserver: &str,
+        additional_nameservers: &[String],
         dns_ttl: u32,
         servable_peers: watch::Receiver<ServablePeers>,
     ) -> Result<Self> {
         let seed_domain = parse_absolute_name("seed domain", seed_domain)?;
-        let nameserver_name = parse_absolute_name("nameserver", nameserver)?;
         let seed_domain_lower = LowerName::from(seed_domain.clone());
-        let nameserver_lower = LowerName::from(nameserver_name.clone());
-        ensure!(
-            !seed_domain_lower.zone_of(&nameserver_lower),
-            "nameserver must be outside the seed domain because Zeeder does not serve address records for nameserver hostnames"
-        );
-        let records = ZoneRecords::new(seed_domain, nameserver_name, dns_ttl)?;
+        let mut nameserver_names = Vec::with_capacity(1 + additional_nameservers.len());
+        let mut unique_nameservers = BTreeSet::new();
+        for (index, nameserver) in std::iter::once(nameserver)
+            .chain(additional_nameservers.iter().map(String::as_str))
+            .enumerate()
+        {
+            let field = if index == 0 {
+                "nameserver".to_string()
+            } else {
+                format!("additional nameserver {}", index - 1)
+            };
+            let nameserver_name = parse_absolute_name(&field, nameserver)?;
+            let nameserver_lower = LowerName::from(nameserver_name.clone());
+            ensure!(
+                !seed_domain_lower.zone_of(&nameserver_lower),
+                "nameserver must be outside the seed domain because Zeeder does not serve address records for nameserver hostnames"
+            );
+            ensure!(
+                unique_nameservers.insert(nameserver_lower),
+                "{field} duplicates another nameserver in the zone"
+            );
+            nameserver_names.push(nameserver_name);
+        }
+        let records = ZoneRecords::new(&seed_domain, nameserver_names, dns_ttl)?;
 
         Ok(Self {
             network,
@@ -139,7 +157,7 @@ impl SeedZone {
                 soa_records: vec![self.records.soa.clone()],
             },
             ZoneAnswer::Nameserver => DnsResponseRecords {
-                answer_records: vec![self.records.nameserver.clone()],
+                answer_records: self.records.nameservers.clone(),
                 soa_records: Vec::new(),
             },
             ZoneAnswer::StartOfAuthority => DnsResponseRecords {
@@ -183,14 +201,18 @@ fn parse_absolute_name(field: &str, name_text: &str) -> Result<Name> {
 }
 
 impl ZoneRecords {
-    fn new(seed_domain: Name, nameserver_name: Name, dns_ttl: u32) -> Result<Self> {
+    fn new(seed_domain: &Name, nameserver_names: Vec<Name>, dns_ttl: u32) -> Result<Self> {
+        let primary_nameserver = nameserver_names
+            .first()
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("zone must have a primary nameserver"))?;
         let seed_domain_ascii = seed_domain.to_ascii();
         let responsible_mailbox = Name::from_ascii(format!("hostmaster.{seed_domain_ascii}"))
             .wrap_err_with(|| {
                 format!("invalid synthesized SOA mailbox for `{seed_domain_ascii}`")
             })?;
         let soa = SOA::new(
-            nameserver_name.clone(),
+            primary_nameserver,
             responsible_mailbox,
             SOA_SERIAL,
             SOA_REFRESH_SECONDS,
@@ -201,7 +223,12 @@ impl ZoneRecords {
 
         Ok(Self {
             soa: Record::from_rdata(seed_domain.clone(), dns_ttl, RData::SOA(soa)),
-            nameserver: Record::from_rdata(seed_domain, dns_ttl, RData::NS(NS(nameserver_name))),
+            nameservers: nameserver_names
+                .into_iter()
+                .map(|nameserver| {
+                    Record::from_rdata(seed_domain.clone(), dns_ttl, RData::NS(NS(nameserver)))
+                })
+                .collect(),
         })
     }
 }
@@ -464,8 +491,29 @@ mod tests {
         nameserver: &str,
         servable_peers: ServablePeers,
     ) -> color_eyre::Result<SeedZone> {
+        zone_with_nameservers(network, seed_domain, nameserver, &[], servable_peers)
+    }
+
+    fn zone_with_nameservers(
+        network: ZcashNetwork,
+        seed_domain: &str,
+        nameserver: &str,
+        additional_nameservers: &[&str],
+        servable_peers: ServablePeers,
+    ) -> color_eyre::Result<SeedZone> {
         let (_sender, receiver) = watch::channel(servable_peers);
-        SeedZone::new(network, seed_domain, nameserver, 600, receiver)
+        let additional_nameservers: Vec<String> = additional_nameservers
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        SeedZone::new(
+            network,
+            seed_domain,
+            nameserver,
+            &additional_nameservers,
+            600,
+            receiver,
+        )
     }
 
     fn single_zone_handler(
@@ -698,6 +746,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rejects_duplicate_nameservers() {
+        let result = zone_with_nameservers(
+            ZcashNetwork::Mainnet,
+            "mainnet.seeder.test",
+            "ns1.seeder.test",
+            &["NS1.SEEDER.TEST.", "ns2.seeder.test"],
+            ServablePeers::default(),
+        );
+
+        assert!(
+            result.is_err(),
+            "nameserver duplicates should be rejected case-insensitively"
+        );
+    }
+
     #[tokio::test]
     async fn refuses_queries_outside_every_zone() -> TestResult {
         let handler = single_zone_handler("mainnet.seeder.test", ServablePeers::default(), None)?;
@@ -876,6 +940,53 @@ mod tests {
                 .iter()
                 .any(|record| matches!(&record.data, RData::SOA(_))),
             "in-zone subdomain should include SOA authority"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn returns_shared_nameserver_rrset_and_primary_soa() -> TestResult {
+        let zone = zone_with_nameservers(
+            ZcashNetwork::Mainnet,
+            "mainnet.seeder.test",
+            "ns1.seeder.test",
+            &["ns2.seeder.test", "ns3.seeder.test"],
+            ServablePeers::default(),
+        )?;
+        let handler = DnsRequestHandler::new(vec![zone], None);
+
+        let ns = required_answer_message(&handler, "mainnet.seeder.test", RecordType::NS).await?;
+        let actual_nameservers: HashSet<LowerName> = ns
+            .answers
+            .iter()
+            .map(|record| {
+                let RData::NS(nameserver) = &record.data else {
+                    return Err(color_eyre::eyre::eyre!("NS query returned a non-NS answer"));
+                };
+                Ok(LowerName::from(nameserver.0.clone()))
+            })
+            .collect::<Result<_>>()?;
+        let expected_nameservers = HashSet::from([
+            LowerName::from(Name::from_ascii("ns1.seeder.test.")?),
+            LowerName::from(Name::from_ascii("ns2.seeder.test.")?),
+            LowerName::from(Name::from_ascii("ns3.seeder.test.")?),
+        ]);
+        assert_eq!(actual_nameservers, expected_nameservers);
+
+        let soa = required_answer_message(&handler, "mainnet.seeder.test", RecordType::SOA).await?;
+        let RData::SOA(soa) = &soa
+            .answers
+            .first()
+            .ok_or_else(|| color_eyre::eyre::eyre!("SOA query should return one answer"))?
+            .data
+        else {
+            return Err(color_eyre::eyre::eyre!("expected SOA record"));
+        };
+        assert_eq!(
+            LowerName::from(soa.mname.clone()),
+            LowerName::from(Name::from_ascii("ns1.seeder.test.")?),
+            "the primary nameserver should remain the SOA MNAME"
         );
 
         Ok(())

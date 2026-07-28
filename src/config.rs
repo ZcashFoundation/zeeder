@@ -10,7 +10,7 @@ use config::{Config, Environment, File};
 use hickory_proto::rr::{LowerName, Name};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     num::NonZeroU32,
 };
@@ -105,11 +105,17 @@ pub(crate) struct ZoneConfig {
     /// The domain name this zone is authoritative for.
     pub(crate) domain: String,
 
-    /// The authoritative nameserver for `domain`.
+    /// The primary authoritative nameserver for `domain` and the SOA MNAME.
     ///
     /// This must be outside `domain` because Zeeder does not serve address
     /// records for nameserver hostnames.
     pub(crate) nameserver: String,
+
+    /// Additional authoritative nameservers included in the zone's NS `RRset`.
+    ///
+    /// Every name must be outside `domain` and distinct from the primary and
+    /// every other additional nameserver.
+    pub(crate) additional_nameservers: Vec<String>,
 
     /// DNS response TTL (time to live) in seconds for this zone.
     ///
@@ -123,6 +129,7 @@ impl Default for ZoneConfig {
         Self {
             domain: String::new(),
             nameserver: String::new(),
+            additional_nameservers: Vec::new(),
             ttl: 600,
         }
     }
@@ -133,8 +140,20 @@ impl ZoneConfig {
     fn validated_domain(&self, network: ZcashNetwork) -> Result<LowerName> {
         let network = network.label();
         let domain = parse_dns_name(&format!("zones.{network}.domain"), &self.domain)?;
-        let nameserver = parse_dns_name(&format!("zones.{network}.nameserver"), &self.nameserver)?;
-        ensure_nameserver_is_out_of_zone(&domain, &nameserver)?;
+        let primary_nameserver =
+            parse_dns_name(&format!("zones.{network}.nameserver"), &self.nameserver)?;
+        let mut nameservers = BTreeSet::new();
+        validate_nameserver(
+            &domain,
+            &mut nameservers,
+            &format!("zones.{network}.nameserver"),
+            primary_nameserver,
+        )?;
+        for (index, nameserver) in self.additional_nameservers.iter().enumerate() {
+            let field = format!("zones.{network}.additional_nameservers[{index}]");
+            let nameserver = parse_dns_name(&field, nameserver)?;
+            validate_nameserver(&domain, &mut nameservers, &field, nameserver)?;
+        }
 
         Ok(LowerName::from(domain))
     }
@@ -174,6 +193,20 @@ fn ensure_nameserver_is_out_of_zone(domain: &Name, nameserver: &Name) -> Result<
         "nameserver must be outside its zone domain because Zeeder does not serve address records for nameserver hostnames"
     );
 
+    Ok(())
+}
+
+fn validate_nameserver(
+    domain: &Name,
+    nameservers: &mut BTreeSet<LowerName>,
+    field: &str,
+    nameserver: Name,
+) -> Result<()> {
+    ensure_nameserver_is_out_of_zone(domain, &nameserver)?;
+    ensure!(
+        nameservers.insert(LowerName::from(nameserver)),
+        "{field} duplicates another nameserver in the zone"
+    );
     Ok(())
 }
 
@@ -287,6 +320,9 @@ impl SeederConfig {
         builder = builder.add_source(
             Environment::with_prefix("ZEEDER")
                 .separator("__")
+                .list_separator(",")
+                .with_list_parse_key("zones.mainnet.additional_nameservers")
+                .with_list_parse_key("zones.testnet.additional_nameservers")
                 .try_parsing(true),
         );
 
@@ -424,7 +460,8 @@ ttl = 600
         let expected_rows = [
             "| `dns.listen_addr` | `ZEEDER__DNS__LISTEN_ADDR` | `0.0.0.0:53` | Shared DNS listener for every zone |",
             "| `zones.<network>.domain` | `ZEEDER__ZONES__<NETWORK>__DOMAIN` | (none) | Authoritative domain for that network |",
-            "| `zones.<network>.nameserver` | `ZEEDER__ZONES__<NETWORK>__NAMESERVER` | (none) | Out-of-zone authoritative nameserver |",
+            "| `zones.<network>.nameserver` | `ZEEDER__ZONES__<NETWORK>__NAMESERVER` | (none) | Primary out-of-zone nameserver and SOA MNAME |",
+            "| `zones.<network>.additional_nameservers` | `ZEEDER__ZONES__<NETWORK>__ADDITIONAL_NAMESERVERS` | `[]` | Comma-separated additional out-of-zone nameservers |",
             "| `zones.<network>.ttl` | `ZEEDER__ZONES__<NETWORK>__TTL` | `600` | DNS response TTL in seconds |",
             "| `rate_limit.queries_per_second` | `ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP; must be greater than 0 |",
             "| `rate_limit.burst_size` | `ZEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity; must be greater than 0 |",
@@ -448,9 +485,11 @@ ttl = 600
             "ZEEDER__DNS__LISTEN_ADDR",
             "ZEEDER__ZONES__MAINNET__DOMAIN",
             "ZEEDER__ZONES__MAINNET__NAMESERVER",
+            "ZEEDER__ZONES__MAINNET__ADDITIONAL_NAMESERVERS",
             "ZEEDER__ZONES__MAINNET__TTL",
             "ZEEDER__ZONES__TESTNET__DOMAIN",
             "ZEEDER__ZONES__TESTNET__NAMESERVER",
+            "ZEEDER__ZONES__TESTNET__ADDITIONAL_NAMESERVERS",
             "ZEEDER__ZONES__TESTNET__TTL",
             "ZEEDER__METRICS__ENDPOINT_ADDR",
             "ZEEDER__HEALTH__ENDPOINT_ADDR",
@@ -553,11 +592,16 @@ listen_addr = "127.0.0.1:1053"
 [zones.mainnet]
 domain = "mainnet.seeder.example.com"
 nameserver = "ns-mainnet.seeder.example.com"
+additional_nameservers = [
+    "ns2-mainnet.seeder.example.com",
+    "ns3-mainnet.seeder.example.com",
+]
 ttl = 600
 
 [zones.testnet]
 domain = "testnet.seeder.example.com"
 nameserver = "ns-testnet.seeder.example.com"
+additional_nameservers = ["ns2-testnet.seeder.example.com"]
 ttl = 300
 
 [rate_limit]
@@ -582,6 +626,7 @@ endpoint_addr = "127.0.0.1:9999"
             .get(&ZcashNetwork::Mainnet)
             .ok_or_else(|| eyre!("mainnet zone should load"))?;
         assert_eq!(mainnet.domain, "mainnet.seeder.example.com");
+        assert_eq!(mainnet.additional_nameservers.len(), 2);
         assert_eq!(mainnet.ttl, 600);
         assert_eq!(
             config.zones[&ZcashNetwork::Testnet].ttl,
@@ -593,6 +638,33 @@ endpoint_addr = "127.0.0.1:9999"
                 .rate_limit
                 .map(|rate_limit| (rate_limit.queries_per_second, rate_limit.burst_size)),
             Some((50, 100))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn env_parses_additional_nameservers_as_a_list() -> TestResult {
+        let config = temp_env::with_vars(
+            [
+                (
+                    "ZEEDER__ZONES__MAINNET__DOMAIN",
+                    Some("mainnet.seeder.example.com"),
+                ),
+                (
+                    "ZEEDER__ZONES__MAINNET__NAMESERVER",
+                    Some("ns1.seeder.example.com"),
+                ),
+                (
+                    "ZEEDER__ZONES__MAINNET__ADDITIONAL_NAMESERVERS",
+                    Some("ns2.seeder.example.com,ns3.seeder.example.com"),
+                ),
+            ],
+            || SeederConfig::load_with_env(None),
+        )?;
+
+        assert_eq!(
+            config.zones[&ZcashNetwork::Mainnet].additional_nameservers,
+            ["ns2.seeder.example.com", "ns3.seeder.example.com"]
         );
         Ok(())
     }
@@ -744,6 +816,58 @@ endpoint_addr = "127.0.0.1:9999"
         assert!(
             config.is_err(),
             "in-zone nameserver should fail because Zeeder does not serve glue"
+        );
+    }
+
+    #[test]
+    fn in_zone_additional_nameserver_is_rejected() {
+        let config = temp_env::with_vars(
+            [
+                (
+                    "ZEEDER__ZONES__TESTNET__DOMAIN",
+                    Some("testnet.seeder.example.com"),
+                ),
+                (
+                    "ZEEDER__ZONES__TESTNET__NAMESERVER",
+                    Some("ns1.seeder.example.com"),
+                ),
+                (
+                    "ZEEDER__ZONES__TESTNET__ADDITIONAL_NAMESERVERS",
+                    Some("ns2.testnet.seeder.example.com"),
+                ),
+            ],
+            || SeederConfig::load_with_env(None),
+        );
+
+        assert!(
+            config.is_err(),
+            "in-zone additional nameservers should fail because Zeeder does not serve glue"
+        );
+    }
+
+    #[test]
+    fn duplicate_nameservers_are_rejected() {
+        let config = temp_env::with_vars(
+            [
+                (
+                    "ZEEDER__ZONES__MAINNET__DOMAIN",
+                    Some("mainnet.seeder.example.com"),
+                ),
+                (
+                    "ZEEDER__ZONES__MAINNET__NAMESERVER",
+                    Some("ns1.seeder.example.com"),
+                ),
+                (
+                    "ZEEDER__ZONES__MAINNET__ADDITIONAL_NAMESERVERS",
+                    Some("NS1.SEEDER.EXAMPLE.COM.,ns2.seeder.example.com"),
+                ),
+            ],
+            || SeederConfig::load_with_env(None),
+        );
+
+        assert!(
+            config.is_err(),
+            "nameserver duplicates should be rejected case-insensitively"
         );
     }
 

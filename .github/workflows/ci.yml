@@ -68,9 +68,11 @@ jobs:
           --env ZEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053 \
           --env ZEEDER__ZONES__MAINNET__DOMAIN=mainnet.seeder.example.com \
           --env ZEEDER__ZONES__MAINNET__NAMESERVER=ns1.example.com \
+          --env ZEEDER__ZONES__MAINNET__ADDITIONAL_NAMESERVERS=ns2.example.com,ns3.example.com \
           --env ZEEDER__ZONES__MAINNET__TTL=600 \
           --env ZEEDER__ZONES__TESTNET__DOMAIN=testnet.seeder.example.com \
           --env ZEEDER__ZONES__TESTNET__NAMESERVER=ns1.example.com \
+          --env ZEEDER__ZONES__TESTNET__ADDITIONAL_NAMESERVERS=ns2.example.com,ns3.example.com \
           --env ZEEDER__ZONES__TESTNET__TTL=300 \
           --env ZEEDER__METRICS__ENDPOINT_ADDR=127.0.0.1:9999 \
           --env ZEEDER__HEALTH__ENDPOINT_ADDR=127.0.0.1:8080 \
@@ -139,7 +141,6 @@ jobs:
         bash -n deploy/gcp/seeders.sh
         sed \
           -e 's#__IMAGE_REF__#docker.io/zfnd/dnsseeder@sha256:1111111111111111111111111111111111111111111111111111111111111111#g' \
-          -e 's#__NAMESERVER__#ns1.zfnd.org#g' \
           deploy/gcp/startup-script.sh.tmpl > /tmp/startup-script.sh
         bash -n /tmp/startup-script.sh
         scoped_redirects="$(grep -c -- "-A PREROUTING -i \"\${DNS_INGRESS_INTERFACE}\"" /tmp/startup-script.sh)"
@@ -154,6 +155,10 @@ jobs:
         grep -Fq -- '--log-driver json-file' /tmp/startup-script.sh
         grep -Fq -- '--log-opt max-size=10m' /tmp/startup-script.sh
         grep -Fq -- '--log-opt max-file=3' /tmp/startup-script.sh
+        grep -Fq -- 'ZEEDER__ZONES__MAINNET__NAMESERVER=ns1.zfnd.org' /tmp/startup-script.sh
+        grep -Fq -- 'ZEEDER__ZONES__MAINNET__ADDITIONAL_NAMESERVERS=ns2.zfnd.org,ns3.zfnd.org,ns4.zfnd.org,ns5.zfnd.org,ns6.zfnd.org' /tmp/startup-script.sh
+        grep -Fq -- 'ZEEDER__ZONES__TESTNET__NAMESERVER=ns1.zfnd.org' /tmp/startup-script.sh
+        grep -Fq -- 'ZEEDER__ZONES__TESTNET__ADDITIONAL_NAMESERVERS=ns2.zfnd.org,ns3.zfnd.org,ns4.zfnd.org,ns5.zfnd.org,ns6.zfnd.org' /tmp/startup-script.sh
         if grep -Fq -- 'docker ps -aq' /tmp/startup-script.sh; then
           echo "::error::startup script must not remove unrelated host containers"
           exit 1
@@ -188,7 +193,7 @@ jobs:
         ' docs/operations.md | sort > "${docs_env}"
 
         grep -Eo 'ZEEDER__[A-Z0-9_]+=[^[:space:]\\]+' deploy/gcp/startup-script.sh.tmpl \
-          | sed 's#__NAMESERVER__#<ns>.zfnd.org#' | sort > "${script_env}"
+          | sort > "${script_env}"
         diff -u "${docs_env}" "${script_env}"
 
   # Code Coverage Job
