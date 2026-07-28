@@ -20,9 +20,10 @@ seeder for operators migrating an existing seed domain.
 
 One Zeeder process serves every configured network. Configuration is a map keyed
 by network (`[zones.mainnet]`, `[zones.testnet]`), where each entry binds a
-network to its authoritative DNS identity (`domain`, `nameserver`, `ttl`). The
-process runs one independent `zebra_network` crawler per network and answers all
-of their zones on a single shared DNS listener.
+network to its authoritative DNS identity (`domain`, primary `nameserver`,
+`additional_nameservers`, `ttl`). The process runs one independent
+`zebra_network` crawler per network and answers all of their zones on a single
+shared DNS listener.
 
 A single `DnsRequestHandler` owns the set of zones and routes each query to the
 zone whose domain contains the query name, returning REFUSED for names outside
@@ -40,9 +41,10 @@ The supported network set is closed to mainnet and testnet. Per-network metrics
   every network, which is the migration path operators expect.
 - A network-keyed map makes per-network uniqueness structural and keeps every
   field overridable by environment variable (`ZEEDER__ZONES__MAINNET__DOMAIN`),
-  so the env-driven Docker workflow still configures multiple zones. The config
-  crate cannot populate an array of tables from environment variables, so an
-  array shape would have forced operators onto a TOML file.
+  so the env-driven Docker workflow still configures multiple zones. Additional
+  nameservers use a comma-separated environment value. The config crate cannot
+  populate an array of tables from environment variables, so an array shape
+  would have forced operators onto a TOML file.
 - Extending the existing custom request handler to route a zone set is a thin
   generalization of the single-zone `zone_of` match already in place. Hickory's
   `Catalog` and `ZoneHandler` model a record store with AXFR, NXDOMAIN proofs,
@@ -57,6 +59,8 @@ The supported network set is closed to mainnet and testnet. Per-network metrics
 ## Consequences
 
 - A single deployment serves both networks on one public IP and port 53.
+- Each zone serves a consistent NS RRset from every deployment. Its primary
+  nameserver is also the SOA MNAME.
 - The process holds roughly one crawler's worth of peer connections per network,
   so a two-network process needs about double the file descriptors and P2P
   bandwidth of a single-network process.

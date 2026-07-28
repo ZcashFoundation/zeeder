@@ -38,9 +38,9 @@ send UDP and TCP DNS queries directly to the seeder on port 53.
 Use this model for production:
 
 1. Give the Zeeder service a static public IP address.
-2. Publish an A or AAAA record for each zone's `nameserver`.
-3. Delegate each zone's `domain` to the matching nameserver.
-4. Add more independent seeders by adding more NS records.
+2. Publish an A or AAAA record for every configured nameserver.
+3. Configure every seeder for the same primary and additional nameservers.
+4. Delegate each zone's `domain` to the complete nameserver set.
 
 Both zones can delegate to the same public IP because one process answers both.
 Do not rely on HTTP load balancers, CDNs, Cloud Run, or reverse proxies for the
@@ -66,7 +66,8 @@ ns3-mainnet.seeder.example.com. IN A 198.51.100.30
 ```
 
 Each seeder crawls independently. The recursive resolver chooses which
-nameserver to query and fails over if one is unavailable.
+nameserver to query and fails over if one is unavailable. Every seeder must
+publish the same three-record NS RRset shown in the delegation.
 
 ## Configuration
 
@@ -97,11 +98,13 @@ ZEEDER__DNS__LISTEN_ADDR="0.0.0.0:53"
 # Mainnet zone
 ZEEDER__ZONES__MAINNET__DOMAIN="mainnet.seeder.example.com"
 ZEEDER__ZONES__MAINNET__NAMESERVER="ns-mainnet.seeder.example.com"
+ZEEDER__ZONES__MAINNET__ADDITIONAL_NAMESERVERS="ns2-mainnet.seeder.example.com,ns3-mainnet.seeder.example.com"
 ZEEDER__ZONES__MAINNET__TTL="600"
 
 # Testnet zone
 ZEEDER__ZONES__TESTNET__DOMAIN="testnet.seeder.example.com"
 ZEEDER__ZONES__TESTNET__NAMESERVER="ns-testnet.seeder.example.com"
+ZEEDER__ZONES__TESTNET__ADDITIONAL_NAMESERVERS="ns2-testnet.seeder.example.com,ns3-testnet.seeder.example.com"
 ZEEDER__ZONES__TESTNET__TTL="300"
 
 # Rate limiting
@@ -132,11 +135,19 @@ listen_addr = "0.0.0.0:53"
 [zones.mainnet]
 domain = "mainnet.seeder.example.com"
 nameserver = "ns-mainnet.seeder.example.com"
+additional_nameservers = [
+    "ns2-mainnet.seeder.example.com",
+    "ns3-mainnet.seeder.example.com",
+]
 ttl = 600
 
 [zones.testnet]
 domain = "testnet.seeder.example.com"
 nameserver = "ns-testnet.seeder.example.com"
+additional_nameservers = [
+    "ns2-testnet.seeder.example.com",
+    "ns3-testnet.seeder.example.com",
+]
 ttl = 300
 
 [rate_limit]
@@ -166,7 +177,8 @@ zeeder start --config /etc/zeeder/zeeder.toml
 |-----------|---------------------|---------|-------------|
 | `dns.listen_addr` | `ZEEDER__DNS__LISTEN_ADDR` | `0.0.0.0:53` | Shared DNS listener for every zone |
 | `zones.<network>.domain` | `ZEEDER__ZONES__<NETWORK>__DOMAIN` | (none) | Authoritative domain for that network |
-| `zones.<network>.nameserver` | `ZEEDER__ZONES__<NETWORK>__NAMESERVER` | (none) | Out-of-zone authoritative nameserver |
+| `zones.<network>.nameserver` | `ZEEDER__ZONES__<NETWORK>__NAMESERVER` | (none) | Primary out-of-zone nameserver and SOA MNAME |
+| `zones.<network>.additional_nameservers` | `ZEEDER__ZONES__<NETWORK>__ADDITIONAL_NAMESERVERS` | `[]` | Comma-separated additional out-of-zone nameservers |
 | `zones.<network>.ttl` | `ZEEDER__ZONES__<NETWORK>__TTL` | `600` | DNS response TTL in seconds |
 | `rate_limit.queries_per_second` | `ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND` | `10` | Max queries/sec per IP; must be greater than 0 |
 | `rate_limit.burst_size` | `ZEEDER__RATE_LIMIT__BURST_SIZE` | `20` | Burst capacity; must be greater than 0 |
@@ -176,13 +188,19 @@ zeeder start --config /etc/zeeder/zeeder.toml
 
 ### Zone Rules
 
-Each zone's `nameserver` must be outside its own `domain`. For example, if
-`zones.mainnet.domain = "mainnet.seeder.example.com"`, use a nameserver such as
-`ns-mainnet.seeder.example.com`, not `ns.mainnet.seeder.example.com`.
+Each zone's primary and additional nameservers must be outside its own `domain`
+and unique. For example, if
+`zones.mainnet.domain = "mainnet.seeder.example.com"`, use nameservers such as
+`ns-mainnet.seeder.example.com` and `ns2-mainnet.seeder.example.com`, not
+`ns.mainnet.seeder.example.com`.
 
 This rule keeps the authority self-consistent. Zeeder answers A and AAAA only for
 the exact seed domain, so it does not serve glue or address records for a
 nameserver hostname inside that same zone.
+
+Every authoritative server for a zone must use the same primary and additional
+nameservers. Zeeder returns the full configured set in every NS answer and uses
+the primary nameserver as the SOA MNAME.
 
 Zone domains must not overlap. Zeeder rejects a configuration where one zone's
 domain is equal to or nested inside another, so every query routes to exactly one
@@ -214,9 +232,11 @@ services:
       ZEEDER__DNS__LISTEN_ADDR: "0.0.0.0:1053"
       ZEEDER__ZONES__MAINNET__DOMAIN: "mainnet.seeder.example.com"
       ZEEDER__ZONES__MAINNET__NAMESERVER: "ns-mainnet.seeder.example.com"
+      ZEEDER__ZONES__MAINNET__ADDITIONAL_NAMESERVERS: "ns2-mainnet.seeder.example.com,ns3-mainnet.seeder.example.com"
       ZEEDER__ZONES__MAINNET__TTL: "600"
       ZEEDER__ZONES__TESTNET__DOMAIN: "testnet.seeder.example.com"
       ZEEDER__ZONES__TESTNET__NAMESERVER: "ns-testnet.seeder.example.com"
+      ZEEDER__ZONES__TESTNET__ADDITIONAL_NAMESERVERS: "ns2-testnet.seeder.example.com,ns3-testnet.seeder.example.com"
       ZEEDER__ZONES__TESTNET__TTL: "300"
       ZEEDER__METRICS__ENDPOINT_ADDR: "0.0.0.0:9999"
       ZEEDER__HEALTH__ENDPOINT_ADDR: "0.0.0.0:8080"
@@ -297,11 +317,19 @@ listen_addr = "0.0.0.0:53"
 [zones.mainnet]
 domain = "mainnet.seeder.example.com"
 nameserver = "ns-mainnet.seeder.example.com"
+additional_nameservers = [
+    "ns2-mainnet.seeder.example.com",
+    "ns3-mainnet.seeder.example.com",
+]
 ttl = 600
 
 [zones.testnet]
 domain = "testnet.seeder.example.com"
 nameserver = "ns-testnet.seeder.example.com"
+additional_nameservers = [
+    "ns2-testnet.seeder.example.com",
+    "ns3-testnet.seeder.example.com",
+]
 ttl = 300
 
 [rate_limit]
@@ -468,10 +496,12 @@ for the tagged reference.
 ```env
 ZEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053
 ZEEDER__ZONES__MAINNET__DOMAIN=mainnet.seeder.zfnd.org
-ZEEDER__ZONES__MAINNET__NAMESERVER=<ns>.zfnd.org
+ZEEDER__ZONES__MAINNET__NAMESERVER=ns1.zfnd.org
+ZEEDER__ZONES__MAINNET__ADDITIONAL_NAMESERVERS=ns2.zfnd.org,ns3.zfnd.org,ns4.zfnd.org,ns5.zfnd.org,ns6.zfnd.org
 ZEEDER__ZONES__MAINNET__TTL=600
 ZEEDER__ZONES__TESTNET__DOMAIN=testnet.seeder.zfnd.org
-ZEEDER__ZONES__TESTNET__NAMESERVER=<ns>.zfnd.org
+ZEEDER__ZONES__TESTNET__NAMESERVER=ns1.zfnd.org
+ZEEDER__ZONES__TESTNET__ADDITIONAL_NAMESERVERS=ns2.zfnd.org,ns3.zfnd.org,ns4.zfnd.org,ns5.zfnd.org,ns6.zfnd.org
 ZEEDER__ZONES__TESTNET__TTL=300
 ZEEDER__METRICS__ENDPOINT_ADDR=127.0.0.1:9999
 ZEEDER__HEALTH__ENDPOINT_ADDR=127.0.0.1:8080
@@ -479,8 +509,9 @@ ZEEDER__RATE_LIMIT__QUERIES_PER_SECOND=50
 ZEEDER__RATE_LIMIT__BURST_SIZE=100
 ```
 
-Each VM substitutes its own nameserver (`ns1` through `ns6`) for `<ns>`; the
-nameserver is out-of-zone by design.
+Every VM uses this identical authority configuration. The primary nameserver,
+`ns1.zfnd.org`, is the SOA MNAME, while all six nameservers appear in each
+zone's NS RRset. The nameservers are out-of-zone by design.
 
 The startup script keeps Zeeder on Docker's `json-file` logging driver for the
 host logging agent, but bounds retention to three 10 MiB files. This prevents a
@@ -491,7 +522,8 @@ logging and monitoring agents continue running.
 ## DNS Setup
 
 Configure DNS in the parent zone that owns your seed domains. The parent zone
-must publish both the delegation and the nameserver address record for each zone.
+must publish the complete delegation and the address record for every
+nameserver.
 
 ### Both Networks On One IP
 
@@ -523,7 +555,9 @@ ns2-mainnet.seeder.example.com. IN A 198.51.100.10
 ```
 
 Every nameserver listed for `mainnet.seeder.example.com` must run a Zeeder
-process configured with a mainnet zone for that domain.
+process configured with the same mainnet domain, primary nameserver, and
+additional nameservers. The parent delegation and each authoritative NS answer
+must contain the same nameserver set.
 
 ### Delegation Verification
 
@@ -561,9 +595,11 @@ so recursive resolvers can find the authoritative DNS server for the seed domain
 
 ### DNS Provider Notes
 
-Most DNS providers expose this as a delegated subdomain or NS record. Add the NS
-record for each seed domain, then add A or AAAA records for each nameserver
-hostname in the parent zone.
+Most DNS providers expose this as a delegated subdomain or NS record. Add the
+complete NS record set directly to each seed domain, then add A or AAAA records
+for each nameserver hostname in the parent zone. Do not delegate an intermediate
+parent such as `seeder.example.com` unless a separate authoritative service
+answers that zone.
 
 Prefer nameserver hostnames outside the delegated seed domain, such as
 `ns-mainnet.seeder.example.com` for `mainnet.seeder.example.com`. Do not choose

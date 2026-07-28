@@ -62,10 +62,12 @@ docker run -d \
   --volume /var/lib/zeeder/cache:/cache \
   --env ZEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053 \
   --env ZEEDER__ZONES__MAINNET__DOMAIN=mainnet.seeder.zfnd.org \
-  --env ZEEDER__ZONES__MAINNET__NAMESERVER=__NAMESERVER__ \
+  --env ZEEDER__ZONES__MAINNET__NAMESERVER=ns1.zfnd.org \
+  --env ZEEDER__ZONES__MAINNET__ADDITIONAL_NAMESERVERS=ns2.zfnd.org,ns3.zfnd.org,ns4.zfnd.org,ns5.zfnd.org,ns6.zfnd.org \
   --env ZEEDER__ZONES__MAINNET__TTL=600 \
   --env ZEEDER__ZONES__TESTNET__DOMAIN=testnet.seeder.zfnd.org \
-  --env ZEEDER__ZONES__TESTNET__NAMESERVER=__NAMESERVER__ \
+  --env ZEEDER__ZONES__TESTNET__NAMESERVER=ns1.zfnd.org \
+  --env ZEEDER__ZONES__TESTNET__ADDITIONAL_NAMESERVERS=ns2.zfnd.org,ns3.zfnd.org,ns4.zfnd.org,ns5.zfnd.org,ns6.zfnd.org \
   --env ZEEDER__ZONES__TESTNET__TTL=300 \
   --env ZEEDER__METRICS__ENDPOINT_ADDR=127.0.0.1:9999 \
   --env ZEEDER__HEALTH__ENDPOINT_ADDR=127.0.0.1:8080 \

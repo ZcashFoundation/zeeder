@@ -101,8 +101,8 @@ each_selected() {
 render_startup_script() {
   local rendered
   rendered="$(mktemp)"
-  awk -v image_ref="${IMAGE_REF}" -v nameserver="$1" \
-    '{ gsub(/__IMAGE_REF__/, image_ref); gsub(/__NAMESERVER__/, nameserver); print }' \
+  awk -v image_ref="${IMAGE_REF}" \
+    '{ gsub(/__IMAGE_REF__/, image_ref); print }' \
     "${TEMPLATE}" > "${rendered}"
   printf '%s\n' "${rendered}"
 }
@@ -271,7 +271,7 @@ audit_all() {
 
 roll_vm() {
   local name="$1" zone="$2" region="$3" ns="$4" rendered ip digest
-  rendered="$(render_startup_script "${ns}.zfnd.org")"
+  rendered="$(render_startup_script)"
   ip="$(addr "${name}" "${region}")"
   digest="$(digest_short)"
   printf 'rolling %s (%s.zfnd.org)\n' "${name}" "${ns}"
@@ -305,7 +305,7 @@ create_vm() {
   if [ -z "${ip}" ] && ! "${DRY_RUN}"; then
     die "missing static IP ${name} in ${region}; reserve it with: gcloud compute addresses create ${name} --project=${PROJECT} --region=${region} --network-tier=PREMIUM"
   fi
-  rendered="$(render_startup_script "${ns}.zfnd.org")"
+  rendered="$(render_startup_script)"
   run_cmd gcloud compute instances create "${name}" \
     --project="${PROJECT}" --zone="${zone}" --machine-type="${MACHINE_TYPE}" \
     --image-family="${IMAGE_FAMILY}" --image-project="${IMAGE_PROJECT}" \

@@ -86,7 +86,8 @@ sequenceDiagram
 4. If allowed: route the query to the zone whose domain contains the query name
 5. For an exact zone-domain A/AAAA query, read that zone's cached addresses (lock-free via watch channel)
 6. Return pre-filtered and shuffled peers, or NODATA plus SOA if that address family has no servable peers
-7. Return static SOA/NS metadata for SOA/NS queries
+7. Return the primary nameserver in SOA and the complete configured nameserver
+   set in NS answers
 8. Return NODATA plus SOA for unsupported exact-name queries or deeper in-zone labels
 9. Return REFUSED for names outside every configured zone
 
@@ -180,6 +181,7 @@ sequenceDiagram
 - Implement `RequestHandler` trait via a single `DnsRequestHandler` that owns every zone
 - Route each query to the zone whose domain contains the query name, reading that zone's servable-peer feed
 - Handle A, AAAA, SOA, and NS queries at each zone's exact seed name
+- Use the primary nameserver as the SOA MNAME and include every configured nameserver in NS answers
 - Return NODATA plus SOA for empty A/AAAA families, unsupported exact-name queries, and deeper in-zone labels
 - Return REFUSED for names outside every zone
 
@@ -273,6 +275,7 @@ Servable peers are then separated by address family (IPv4/IPv6), shuffled, and c
 - `serde` for deserialization
 - Optional `.env` loading via `dotenvy`; a present malformed `.env` fails startup
 - Validation runs on the resolved config before `print-config` or DNS startup proceeds
+- Zone validation requires unique, out-of-zone primary and additional nameservers
 
 ---
 

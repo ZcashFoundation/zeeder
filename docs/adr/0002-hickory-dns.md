@@ -29,7 +29,8 @@ Zeeder does not adopt Hickory's `Catalog` or `ZoneHandler` abstractions. They mo
 - Well-maintained dependency
 - Negative answers are cacheable because NODATA responses include SOA
 - Subdomain queries do not expand the peer-serving surface
-- The configured authoritative nameserver must be outside `dns.domain` because Zeeder does not serve glue or address records for nameserver hostnames
+- All configured authoritative nameservers must be outside their zone because Zeeder does not serve glue or address records for nameserver hostnames
+- Every NS answer contains the configured primary and additional nameservers, while the primary nameserver remains the SOA MNAME
 - Additional dependency
 - Learning curve for API
 
@@ -38,6 +39,7 @@ Zeeder does not adopt Hickory's `Catalog` or `ZoneHandler` abstractions. They mo
 - 2026-06-11: Completed the authoritative DNS contract: exact seed-name matching, SOA/NS answers, and SOA-backed NODATA responses.
 - 2026-06-12: Replaced synthesized in-zone NS metadata with an explicit out-of-zone `dns.nameserver` setting.
 - 2026-06-26: Generalized the handler from one zone to a routed zone set, one per network, on a shared listener. REFUSED now applies only to names outside every zone. Recorded the decision not to adopt Hickory's `Catalog`/`ZoneHandler`. See ADR 0005 for the multi-network topology.
+- 2026-07-28: Added a shared multi-server NS RRset per zone. The primary nameserver remains the SOA MNAME.
 
 ## Alternatives Considered
 

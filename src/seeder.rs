@@ -167,6 +167,7 @@ async fn spawn_network_crawler(
         network,
         &zone.domain,
         &zone.nameserver,
+        &zone.additional_nameservers,
         zone.ttl,
         servable_peers,
     )?;
