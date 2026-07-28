@@ -485,7 +485,8 @@ nameserver is out-of-zone by design.
 The startup script keeps Zeeder on Docker's `json-file` logging driver for the
 host logging agent, but bounds retention to three 10 MiB files. This prevents a
 query storm or exporter outage from consuming the small Container-Optimized OS
-Docker filesystem.
+Docker filesystem. Rolls replace only the `zeeder` container, so unrelated host
+logging and monitoring agents continue running.
 
 ## DNS Setup
 
