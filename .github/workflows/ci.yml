@@ -123,6 +123,10 @@ jobs:
     # that lives in workflows is invisible to the deploy-script glob below.
     - name: Lint workflows
       uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
+      # GitHub supports concurrency.queue, but actionlint 1.7.12 does not
+      # recognize it yet. Keep checking every other workflow field.
+      with:
+        flags: -ignore unexpected.*queue.*concurrency
 
     - name: Shellcheck deploy scripts
       run: |

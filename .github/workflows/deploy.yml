@@ -35,6 +35,7 @@ permissions: {}
 concurrency:
   group: deploy-seeders
   cancel-in-progress: false
+  queue: max
 
 jobs:
   deploy:

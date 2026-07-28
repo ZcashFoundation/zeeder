@@ -397,8 +397,10 @@ else. It fails fast when the tag does not match the `Cargo.toml` version, then:
   a low glibc floor (Ubuntu 22.04+, Debian 12+, RHEL 9+); the workflow fails
   if a build raises that floor.
 
-Pre-releases publish nothing. The workflow runs when a release is published as
-a full release, including a pre-release later promoted to one.
+Pre-releases publish the signed image and binary assets without updating
+`deploy/gcp/IMAGE` or rolling the fleet. Promoting a pre-release to a full
+release reruns artifact publication and starts deployment after both artifact
+paths succeed.
 
 Docker Hub publishing requires the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
 secrets in the `release` GitHub environment. Docker Hub has no OIDC federation,

@@ -1,16 +1,20 @@
-# The `released` trigger skips pre-releases until they are promoted to a full
-# release.
+# `published` builds pre-releases without deploying. `released` handles full
+# releases and pre-releases promoted to full releases.
 name: Release
 
 on:
   release:
-    types: [released]
+    types: [published, released]
 
 permissions: {}
 
 concurrency:
-  group: release-${{ github.event.release.tag_name }}
+  # Serialize the complete release sequence across tags. Exact pin SHAs keep
+  # each roll deterministic, while the queue keeps older releases from
+  # finishing after newer releases and downgrading the fleet.
+  group: release
   cancel-in-progress: false
+  queue: max
 
 env:
   HUB_IMAGE: docker.io/zfnd/dnsseeder
@@ -18,7 +22,11 @@ env:
 jobs:
   preflight:
     name: Validate release tag
-    if: startsWith(github.event.release.tag_name, 'v')
+    # `published` reliably catches pre-releases created from drafts. Reserve
+    # `released` for stable releases and pre-releases promoted to stable.
+    if: >-
+      startsWith(github.event.release.tag_name, 'v') &&
+      (github.event.action == 'released' || github.event.release.prerelease)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -218,7 +226,11 @@ jobs:
 
   pin-deploy:
     name: Pin fleet image
-    needs: [preflight, publish-image]
+    needs: [preflight, publish-image, publish-binaries]
+    # Pre-releases publish every artifact but do not change desired state or
+    # touch the production fleet. Promotion emits `released` and enters this
+    # job only after both artifact publication paths succeed.
+    if: github.event.action == 'released'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

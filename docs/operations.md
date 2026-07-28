@@ -401,22 +401,25 @@ answering.
 
 ### Deploying a New Image
 
-Publishing a release is the deploy decision. Everything after it is automatic:
+Publishing a full release is the deploy decision. The release workflow runs the
+production sequence automatically:
 
-1. `release.yml` builds, Cosign-signs, and publishes the image.
-2. It commits the published digest to `deploy/gcp/IMAGE`. That file's git
-   history is the deploy ledger.
+1. `release.yml` builds, signs, verifies, and publishes the image and binary
+   release assets.
+2. After both artifact paths succeed, it commits the published digest to
+   `deploy/gcp/IMAGE`. That file's git history is the deploy ledger.
 3. It calls the deploy workflow, which rolls the fleet one nameserver at a time.
 4. `cosign verify` runs on the pinned digest before any VM is touched, so an
    unsigned or mismatched digest never rolls.
-5. `deploy/gcp/seeders.sh --status` is the post-roll check.
 
+Use `deploy/gcp/seeders.sh --status` for an operator-initiated post-roll check.
 Rollback is a `git revert` of `deploy/gcp/IMAGE` followed by a roll.
 
-To publish an image without deploying it — a build that should wait for a
-network upgrade, for example — cut it as a **pre-release**. The release workflow
-only runs once a release is published as a full release, so promoting the
-pre-release later is what starts the deploy.
+To publish artifacts without deploying them, create a pre-release. This is
+useful when a build must wait for a network upgrade: the workflow publishes the
+signed image and binary assets but skips the `IMAGE` commit and fleet roll.
+Promoting the pre-release to a full release reruns artifact publication, then
+starts deployment after both artifact paths succeed.
 
 ### CI-driven deploy
 
@@ -428,15 +431,15 @@ input for rolling a single node. Running `seeders.sh` locally remains the
 fallback and is unchanged.
 
 `release.yml` calls the workflow rather than firing an event at it, because a
-push or release made with `GITHUB_TOKEN` does not start a new workflow run — an
+push or release made with `GITHUB_TOKEN` does not start a new workflow run; an
 event-driven chain would stop after the pin, silently. The call keeps the whole
 sequence inside one run.
 
 Cloud access is keyless, and the fleet inventory is injected from a repository
 variable into a runner-temp file (`FLEET_CONF_FILE`) and masked before any step
 can log it, so no plaintext inventory ever lands in the repository or a
-checkout. It is configuration, not a credential — nothing in it grants access,
-which is decided by IAM — so a readable variable keeps it maintainable.
+checkout. It is configuration, not a credential: nothing in it grants access,
+which is decided by IAM, so a readable variable keeps it maintainable.
 
 The workflow needs a one-time configuration before it can run: keyless CI
 authentication to the fleet project, the variables referenced by `deploy.yml`,
