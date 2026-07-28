@@ -61,6 +61,9 @@ docker run -d \
   --name zeeder \
   --network host \
   --restart always \
+  --log-driver json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   --volume /var/lib/zeeder/cache:/cache \
   --env ZEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053 \
   --env ZEEDER__ZONES__MAINNET__DOMAIN=mainnet.seeder.zfnd.org \

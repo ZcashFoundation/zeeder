@@ -482,6 +482,11 @@ ZEEDER__RATE_LIMIT__BURST_SIZE=100
 Each VM substitutes its own nameserver (`ns1` through `ns6`) for `<ns>`; the
 nameserver is out-of-zone by design.
 
+The startup script keeps Zeeder on Docker's `json-file` logging driver for the
+host logging agent, but bounds retention to three 10 MiB files. This prevents a
+query storm or exporter outage from consuming the small Container-Optimized OS
+Docker filesystem.
+
 ## DNS Setup
 
 Configure DNS in the parent zone that owns your seed domains. The parent zone

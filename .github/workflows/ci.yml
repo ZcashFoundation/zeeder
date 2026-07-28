@@ -151,6 +151,9 @@ jobs:
           echo "::error::startup script must not redirect DNS from every interface"
           exit 1
         fi
+        grep -Fq -- '--log-driver json-file' /tmp/startup-script.sh
+        grep -Fq -- '--log-opt max-size=10m' /tmp/startup-script.sh
+        grep -Fq -- '--log-opt max-file=3' /tmp/startup-script.sh
 
     - name: Check fleet environment docs
       run: |
