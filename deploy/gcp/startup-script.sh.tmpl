@@ -6,12 +6,26 @@ IMAGE_REF="__IMAGE_REF__"
 systemctl stop systemd-resolved || true
 printf 'nameserver 8.8.8.8\nnameserver 8.8.4.4\n' > /etc/resolv.conf
 
-# Redirect privileged :53 to the container's unprivileged :1053. The `-C` guard
-# keeps boot reruns from stacking duplicate rules.
-iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 1053 \
-  || iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 1053
-iptables -t nat -C PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 1053 \
-  || iptables -t nat -A PREROUTING -p tcp --dport 53 -j REDIRECT --to-ports 1053
+# Redirect privileged :53 from the public GCP interface to the container's
+# unprivileged :1053. Do not redirect Docker bridge traffic: local agents use
+# the upstream resolvers above and would otherwise send their own DNS lookups
+# to the authoritative-only Zeeder service.
+DNS_INGRESS_INTERFACE=eth0
+for _proto in udp tcp; do
+  # Remove the legacy all-interface rule when this script updates an existing
+  # host without a reboot.
+  while iptables -t nat -C PREROUTING -p "${_proto}" --dport 53 \
+    -j REDIRECT --to-ports 1053 2>/dev/null; do
+    iptables -t nat -D PREROUTING -p "${_proto}" --dport 53 \
+      -j REDIRECT --to-ports 1053
+  done
+
+  # The `-C` guard keeps boot reruns from stacking duplicate scoped rules.
+  iptables -t nat -C PREROUTING -i "${DNS_INGRESS_INTERFACE}" \
+    -p "${_proto}" --dport 53 -j REDIRECT --to-ports 1053 2>/dev/null \
+    || iptables -t nat -A PREROUTING -i "${DNS_INGRESS_INTERFACE}" \
+      -p "${_proto}" --dport 53 -j REDIRECT --to-ports 1053
+done
 
 # COS defaults filter INPUT to DROP and opens only SSH. The redirect above
 # rewrites the port to 1053 before INPUT sees the packet, and host networking
@@ -47,6 +61,9 @@ docker run -d \
   --name zeeder \
   --network host \
   --restart always \
+  --log-driver json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
   --volume /var/lib/zeeder/cache:/cache \
   --env ZEEDER__DNS__LISTEN_ADDR=0.0.0.0:1053 \
   --env ZEEDER__ZONES__MAINNET__DOMAIN=mainnet.seeder.zfnd.org \

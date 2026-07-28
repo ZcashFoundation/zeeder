@@ -142,6 +142,18 @@ jobs:
           -e 's#__NAMESERVER__#ns1.zfnd.org#g' \
           deploy/gcp/startup-script.sh.tmpl > /tmp/startup-script.sh
         bash -n /tmp/startup-script.sh
+        scoped_redirects="$(grep -c -- "-A PREROUTING -i \"\${DNS_INGRESS_INTERFACE}\"" /tmp/startup-script.sh)"
+        if [ "${scoped_redirects}" -ne 1 ]; then
+          echo "::error::startup script must add one interface-scoped DNS redirect"
+          exit 1
+        fi
+        if grep -E -- '-A PREROUTING -p (udp|tcp).*--dport 53' /tmp/startup-script.sh; then
+          echo "::error::startup script must not redirect DNS from every interface"
+          exit 1
+        fi
+        grep -Fq -- '--log-driver json-file' /tmp/startup-script.sh
+        grep -Fq -- '--log-opt max-size=10m' /tmp/startup-script.sh
+        grep -Fq -- '--log-opt max-file=3' /tmp/startup-script.sh
 
     - name: Check fleet environment docs
       run: |

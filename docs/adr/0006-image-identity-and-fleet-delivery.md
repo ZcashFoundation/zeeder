@@ -52,8 +52,10 @@ inventory is operator-held:
   deploy audit trail and a revert of it is the rollback. A pre-release publishes
   artifacts without changing the pin or the fleet.
 - `startup-script.sh.tmpl` is the per-boot host script. It stops
-  `systemd-resolved`, applies an iptables `REDIRECT` from `:53` to `:1053` for
-  UDP and TCP, and `docker run`s the pinned digest.
+  `systemd-resolved`, applies an iptables `REDIRECT` from the public interface's
+  `:53` to `:1053` for UDP and TCP, and `docker run`s the pinned digest. The
+  interface scope leaves Docker bridge DNS on the configured upstream resolvers
+  instead of looping local agent lookups into Zeeder.
 - `seeders.sh` is mechanism only: `roll`, `create`, `status`, `audit`, and
   `dns`, each with a dry-run.
 
