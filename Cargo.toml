@@ -1,6 +1,6 @@
 [package]
 name = "zeeder"
-version = "1.6.1"
+version = "1.6.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Zeeder, a Zcash DNS seeder based on the Zebra architecture."
