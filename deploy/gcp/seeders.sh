@@ -110,27 +110,22 @@ render_startup_script() {
 addr() {
   local name="$1" region="$2"
   local a_name a_ip a_region a_users
-  local by_user="" by_user_count=0 by_name=""
-  # Matched client-side: a server-side --filter over a repeated field (here,
-  # users) is rejected as an invalid list filter expression by some API
-  # versions, the same failure that broke the firewall preflight. Every caller
-  # wants the address value, never its name.
+  local by_user="" by_name=""
+  # A server-side --filter over the repeated `users` field is rejected as an
+  # invalid list filter expression by some API versions, so match client-side.
   while IFS=';' read -r a_name a_ip a_region a_users; do
     [ "${a_region}" = "${region}" ] || continue
     # An address name does not always match the name of the VM it serves, so
     # identify it by its user.
     if [[ ",${a_users}," == *",${name},"* ]]; then
+      [ -z "${by_user}" ] || die "${name} has more than one reserved address in ${region}"
       by_user="${a_ip}"
-      by_user_count=$((by_user_count + 1))
     fi
     # An address reserved before its VM exists has no user yet, so --create
     # still resolves it by name.
     [ "${a_name}" = "${name}" ] && by_name="${a_ip}"
   done < <(get_cmd gcloud compute addresses list --project="${PROJECT}" \
     --format="csv[no-heading,separator=';'](name, address, region.basename(), users.basename().list())")
-  # Ambiguity is a misconfiguration, not something to resolve by picking one.
-  [ "${by_user_count}" -le 1 ] \
-    || die "${name} has ${by_user_count} reserved addresses in ${region}; expected one"
   printf '%s\n' "${by_user:-${by_name}}"
 }
 
