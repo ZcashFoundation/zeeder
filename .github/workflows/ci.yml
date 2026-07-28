@@ -154,6 +154,10 @@ jobs:
         grep -Fq -- '--log-driver json-file' /tmp/startup-script.sh
         grep -Fq -- '--log-opt max-size=10m' /tmp/startup-script.sh
         grep -Fq -- '--log-opt max-file=3' /tmp/startup-script.sh
+        if grep -Fq -- 'docker ps -aq' /tmp/startup-script.sh; then
+          echo "::error::startup script must not remove unrelated host containers"
+          exit 1
+        fi
 
     - name: Check fleet environment docs
       run: |
