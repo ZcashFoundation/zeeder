@@ -10,7 +10,7 @@ COPY . .
 RUN cargo build --release && mkdir -p /app/cache
 
 # Runtime stage
-FROM gcr.io/distroless/cc-debian13@sha256:a017e74bd2a12d98342dbecd33d121d2b160415ed777573dc1808969e989d94d
+FROM gcr.io/distroless/cc-debian13@sha256:4594d59540d1948417f6ca2829ddd9294493a7c68b7528f4dd459de7f203a750
 
 WORKDIR /app
 
