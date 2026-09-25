@@ -255,9 +255,9 @@ A peer is *servable* only if it is:
 - Routable (no loopback, unspecified, multicast)
 - On the network default port (usually 8233)
 - Not recorded from an inbound connection
-- Clean: no zebra-network misbehavior score
+- Clean: not in a peer group zebra-network has banned
 
-The inbound and misbehavior gates mirror zebra-network's own `MetaAddr::sanitize` behavior for GetAddr replies. A peer that reaches the ban threshold is removed from the address book in the same update that bans it, so it never reaches this filter; a peer with a sub-ban misbehavior score remains in the address book but is not served over DNS.
+The inbound and misbehavior gates mirror zebra-network's own GetAddr advertisement policy. zebra-network bans a whole peer group — one IPv4 address, or one IPv6 `/64` — for 24 hours, removes every address in that group from the address book in the same update, and refuses to re-add them while the ban lasts. Scores do not accumulate below the ban threshold, so a peer is either banned or clean. The seeder asks the address book rather than the entry, which keeps the gate correct even if a banned group's address were ever present.
 
 Servable peers are then separated by address family (IPv4/IPv6), shuffled, and capped at 25.
 

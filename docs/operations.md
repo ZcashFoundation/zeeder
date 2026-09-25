@@ -676,10 +676,12 @@ The DNS query, error, and rate-limit counters are process-wide: one listener
 serves every zone, and rate limiting and error handling happen before a query is
 routed to a zone, so these counters carry no `network` label.
 
-zebra-network also emits its own internal metrics (`zcash.net.*`,
-`candidate_set.*`, `pool.*`). Those carry no `network` label, so when one process
-runs two crawlers their values are combined across networks. Use the
-`zeeder_*` metrics above for per-network monitoring.
+zebra-network also emits its own internal metrics. Its peer-set and
+address-book gauges (`candidate_set.*`, `pool.num_ready`, `pool.num_unready`,
+`zcash.net.peers`) carry a `network` label, but its counters, such as
+`zcash.net.in.bytes.total` and the `pool.*` load-shedding counters, do not, so
+their values combine both crawlers. Use the `zeeder_*` metrics above for
+per-network monitoring.
 
 ### Prometheus Queries
 
