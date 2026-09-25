@@ -352,7 +352,7 @@ fn sample_network_groups(
         let now = Utc::now();
 
         book.peers()
-            .filter(|meta| classify_peer(meta, now, network, minimum_version).is_ok())
+            .filter(|meta| classify_peer(&book, meta, now, network, minimum_version).is_ok())
             .map(|meta| meta.addr())
             .collect::<Vec<_>>()
     };

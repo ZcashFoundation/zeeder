@@ -129,7 +129,7 @@ fn servable_peers(
     let mut unservable: HashMap<UnservableReason, usize> = HashMap::new();
 
     for meta in book.peers() {
-        match classify_peer(&meta, now, network, minimum_version) {
+        match classify_peer(book, &meta, now, network, minimum_version) {
             Ok(()) => {
                 let addr = meta.addr();
                 let is_target_version = meta
@@ -192,7 +192,7 @@ fn shuffled_version_preferred_peers(
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
     use tracing::Span;
     use zebra_chain::parameters::Network;
@@ -214,6 +214,10 @@ mod tests {
 
     fn peer(octets: [u8; 4], port: u16) -> PeerSocketAddr {
         PeerSocketAddr::from(SocketAddr::new(IpAddr::V4(Ipv4Addr::from(octets)), port))
+    }
+
+    fn peer_v6(segments: [u16; 8], port: u16) -> PeerSocketAddr {
+        PeerSocketAddr::from(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(segments)), port))
     }
 
     fn update_connected_peer(
@@ -378,24 +382,28 @@ mod tests {
         );
     }
 
+    /// Banning one IPv6 peer keeps its whole `/64` out of DNS responses.
+    ///
+    /// zebra-network bans a peer group — one IPv4 address, or one IPv6 `/64` —
+    /// so it drops the banned address's `/64` siblings from the book and
+    /// refuses to re-add them. The seeder relies on that instead of filtering
+    /// by address, so a sibling that never misbehaved itself must disappear too,
+    /// while an unrelated `/64` stays servable.
     #[test]
-    fn sub_ban_misbehaving_peer_is_not_servable() {
+    fn banning_an_ipv6_peer_excludes_its_whole_slash_64() {
         let mut book = empty_book();
-        let addr = peer([1, 2, 3, 4], 8233);
-        let misbehavior_score = MAX_PEER_MISBEHAVIOR_SCORE - 1;
-        update_connected_peer(&mut book, addr, PeerServices::NODE_NETWORK, false);
-        book.update(MetaAddr::new_misbehavior(addr, misbehavior_score));
+        let offender = peer_v6([0x2a00, 0x1450, 0x4001, 0x0801, 0, 0, 0, 0x1], 8233);
+        let sibling = peer_v6([0x2a00, 0x1450, 0x4001, 0x0801, 0, 0, 0, 0x2], 8233);
+        let unrelated = peer_v6([0x2a00, 0x1450, 0x4001, 0x0802, 0, 0, 0, 0x1], 8233);
+        for addr in [offender, sibling, unrelated] {
+            update_connected_peer(&mut book, addr, PeerServices::NODE_NETWORK, false);
+        }
 
-        assert_eq!(
-            book.len(),
-            1,
-            "a sub-ban misbehaving peer remains in the address book"
-        );
-        assert!(
-            book.peers()
-                .any(|meta| meta.misbehavior() == misbehavior_score),
-            "the peer should carry the sub-ban misbehavior score"
-        );
+        book.update(MetaAddr::new_misbehavior(
+            offender,
+            MAX_PEER_MISBEHAVIOR_SCORE,
+        ));
+        update_connected_peer(&mut book, sibling, PeerServices::NODE_NETWORK, false);
 
         let peers = servable_peers(
             &book,
@@ -405,9 +413,10 @@ mod tests {
             "mainnet",
             false,
         );
-        assert!(
-            peers.ipv4.is_empty() && peers.ipv6.is_empty(),
-            "a misbehaving peer must not be served"
+        assert_eq!(
+            &*peers.ipv6,
+            &[unrelated],
+            "only the peer outside the banned /64 may be served"
         );
     }
 
@@ -541,7 +550,7 @@ mod tests {
 
         assert_eq!(book.len(), 0, "a banned peer is removed from the book");
         assert!(
-            book.bans().contains_key(&addr.ip()),
+            book.bans().is_banned(addr.ip()),
             "the banned ip is recorded in the ban set"
         );
     }
