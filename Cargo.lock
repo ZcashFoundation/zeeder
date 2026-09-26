@@ -4417,9 +4417,9 @@ dependencies = [
 
 [[package]]
 name = "zebra-chain"
-version = "13.0.0"
+version = "13.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d136d0c0ed7ed109ef372e6d7b185615aa7c75583e3d893138106dbc321a2a0"
+checksum = "6cbe2bf819b44f24b55c80f22dc59dee6ce4055c489de87f1a83503e27a992c6"
 dependencies = [
  "bech32",
  "bitflags",
