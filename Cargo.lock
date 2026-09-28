@@ -4517,7 +4517,7 @@ dependencies = [
 
 [[package]]
 name = "zeeder"
-version = "1.6.2"
+version = "1.6.3"
 dependencies = [
  "async-trait",
  "chrono",
