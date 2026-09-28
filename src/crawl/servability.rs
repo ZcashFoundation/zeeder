@@ -4,15 +4,15 @@
 //! A peer is servable only when zebra-network has recently handshaked it, its
 //! negotiated version satisfies the current dynamic floor, it advertises the
 //! full-node `NODE_NETWORK` service, its address is routable on the network's
-//! default port, it was not recorded from an inbound connection, and it has no
-//! misbehavior score. Rechecking the negotiated version here prevents peers
+//! default port, it was not recorded from an inbound connection, and its peer
+//! group is not banned. Rechecking the negotiated version here prevents peers
 //! admitted before an observed activation from remaining in DNS responses.
 
 use std::net::IpAddr;
 
 use chrono::{DateTime, Utc};
 use zebra_chain::parameters::Network;
-use zebra_network::{Version, types::MetaAddr};
+use zebra_network::{AddressBook, Version, types::MetaAddr};
 
 /// Why a peer is not servable. Each variant maps to a stable `reason` metric label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -29,7 +29,9 @@ pub(crate) enum UnservableReason {
     NotFullNode,
     /// Recorded from an inbound peer connection.
     Inbound,
-    /// Has a non-zero zebra-network misbehavior score.
+    /// Belongs to a peer group zebra-network has banned for misbehavior. Bans
+    /// cover one IPv4 address or one IPv6 `/64`, so this also excludes an
+    /// address that never misbehaved itself but shares a banned `/64`.
     Misbehaving,
 }
 
@@ -104,7 +106,12 @@ fn classify(peer: PeerAttributes) -> Result<(), UnservableReason> {
 }
 
 /// Extract the values [`classify`] needs from an address-book entry.
+///
+/// The misbehavior score comes from `book` rather than `meta`: zebra-network
+/// tracks bans per peer group, not per entry, and reports either the maximum
+/// score for a banned group or zero.
 pub(crate) fn classify_peer(
+    book: &AddressBook,
     meta: &MetaAddr,
     now: DateTime<Utc>,
     network: &Network,
@@ -120,7 +127,7 @@ pub(crate) fn classify_peer(
         minimum_version,
         advertises_node_network: meta.last_known_info_is_valid_for_outbound(network),
         is_inbound: meta.is_inbound(),
-        misbehavior_score: meta.misbehavior(),
+        misbehavior_score: book.misbehavior_score(addr),
     })
 }
 

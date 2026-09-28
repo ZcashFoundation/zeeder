@@ -4,9 +4,9 @@ This glossary defines terms that carry architectural meaning in zeeder. Read it 
 
 ## Servable
 
-A peer is *servable* when the seeder may return it in DNS A or AAAA answers. A servable peer has been recently handshaked by zebra-network, negotiated at or above the current observed protocol floor, advertises `NODE_NETWORK`, is routable, uses the network default port, was not learned from an inbound connection, and has no zebra-network misbehavior score. Servability is decided per network, against that network's crawler.
+A peer is *servable* when the seeder may return it in DNS A or AAAA answers. A servable peer has been recently handshaked by zebra-network, negotiated at or above the current observed protocol floor, advertises `NODE_NETWORK`, is routable, uses the network default port, was not learned from an inbound connection, and is not in a peer group zebra-network has banned. Servability is decided per network, against that network's crawler.
 
-Raw address-book membership is not enough. Gossiped, stale, inbound-provenance, misbehaving, wrong-port, or non-full-node peers remain known to zebra-network but are not servable.
+Raw address-book membership is not enough. Gossiped, stale, inbound-provenance, wrong-port, or non-full-node peers remain known to zebra-network but are not servable. Misbehaving peers are different: zebra-network bans their whole peer group, removes it from the address book, and refuses to re-add it until the ban expires.
 
 ## Zone
 

@@ -68,12 +68,14 @@ The supported network set is closed to mainnet and testnet. Per-network metrics
   (testnet).
 - Regtest cannot be served alongside testnet, because both use P2P port 18233. A
   third concurrent network is not supported.
-- zebra-network's own internal metrics (`zcash.net.*`, `candidate_set.*`,
-  `pool.*`) carry no network label, so with two crawlers in one process their
-  values are combined across networks. Per-network observability comes from the
-  `zeeder_*` metrics, which carry the `network` label. Splitting zebra's internal
-  metrics per network would require a per-instance recorder layer and is out of
-  scope.
+- zebra-network's own internal metrics are only partly split by network. Since
+  zebra-network 12 its peer-set and address-book gauges (`candidate_set.*`,
+  `pool.num_ready`, `pool.num_unready`, `zcash.net.peers`) carry a `network`
+  label; its counters, such as `zcash.net.in.bytes.total` and the `pool.*`
+  load-shedding counters, still combine both crawlers. Per-network observability
+  comes from the `zeeder_*` metrics, which all carry the `network` label.
+  Splitting the remaining counters would require a per-instance recorder layer
+  and is out of scope.
 
 ## Alternatives Considered
 
