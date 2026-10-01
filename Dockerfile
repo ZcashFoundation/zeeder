@@ -7,7 +7,7 @@ WORKDIR /app
 COPY . .
 
 # Build the release binary and prepare the runtime cache mount point.
-RUN cargo build --release && mkdir -p /app/cache
+RUN cargo build --locked --release && mkdir -p /app/cache
 
 # Runtime stage
 FROM gcr.io/distroless/cc-debian13@sha256:a017e74bd2a12d98342dbecd33d121d2b160415ed777573dc1808969e989d94d
