@@ -39,7 +39,7 @@ jobs:
       run: cargo nextest run --verbose
 
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --locked --verbose
 
   docker:
     runs-on: ubuntu-latest
