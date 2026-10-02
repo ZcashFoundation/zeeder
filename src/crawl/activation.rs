@@ -560,13 +560,13 @@ mod tests {
     }
 
     #[test]
-    fn latest_testnet_target_requires_reorg_safe_nu6_3_depth() {
+    fn latest_testnet_target_requires_reorg_safe_nu7_depth() {
         let target = ActivationTarget::latest(&Network::new_default_testnet());
 
-        assert_eq!(target.activation_height, Height(4_134_000));
-        assert_eq!(target.confirmation_height, Height(4_135_000));
-        assert_eq!(target.required_version, Version(170_160));
-        assert_eq!(target.pre_activation_height, Height(4_133_999));
+        assert_eq!(target.activation_height, Height(4_465_026));
+        assert_eq!(target.confirmation_height, Height(4_466_026));
+        assert_eq!(target.required_version, Version(170_180));
+        assert_eq!(target.pre_activation_height, Height(4_465_025));
     }
 
     #[test]
