@@ -42,8 +42,8 @@ color-eyre = { version = "0.6", default-features = false, features = [
     "track-caller",
 ] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
-zebra-network = { version = "13.0.0", default-features = false }
-zebra-chain = { version = "13.0.1", default-features = false }
+zebra-network = { version = "14.0.0", default-features = false }
+zebra-chain = { version = "14.0.0", default-features = false }
 dotenvy = { version = "0.15.7", default-features = false }
 rand = { version = "0.10.1", default-features = false, features = [
     "thread_rng",
