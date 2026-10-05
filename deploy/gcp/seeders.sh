@@ -197,7 +197,7 @@ gate() {
   if [ "${main_udp}" -lt 1 ] || [ "${main_tcp}" -lt 1 ]; then
     die "gate failed for ${ip}: mainnet udp=${main_udp} tcp=${main_tcp} (testnet udp=${test_udp} tcp=${test_tcp})"
   fi
-  # Testnet is soft-gated: the NU6.3 protocol floor (#51) makes testnet servability
+  # Testnet is soft-gated: protocol-floor transitions make testnet servability
   # network-dependent, so a freshly reset crawler can sit at servable=0 for a while while
   # mainnet is healthy. Warn and continue instead of aborting a node that serves mainnet fine.
   warn "gate soft-pass for ${ip}: mainnet udp=${main_udp} tcp=${main_tcp} healthy; testnet udp=${test_udp} tcp=${test_tcp} not yet serving — continuing (testnet crawler may still be warming up)"

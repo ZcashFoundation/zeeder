@@ -662,9 +662,9 @@ distinguishable.
 | `zeeder_peers_unservable` | Gauge | `network=mainnet\|testnet`, `reason=not_routable\|wrong_port\|not_recently_live\|outdated_version\|not_full_node\|inbound\|misbehaving` | Unservable peers, by reason | - |
 | `zeeder_peers_known` | Gauge | `network=mainnet\|testnet` | Total peers in the address book | - |
 | `zeeder_min_protocol_version` | Gauge | `network=mainnet\|testnet` | Enforced protocol-version floor | changes only at a network upgrade |
-| `zeeder_activation_ready_groups` | Gauge | `network=mainnet\|testnet` | Groups qualifying in the latest in-process activation sweep | below 75% of total after confirmation height |
-| `zeeder_activation_total_groups` | Gauge | `network=mainnet\|testnet` | Groups sampled in the latest in-process activation sweep | < 12 after confirmation height |
-| `zeeder_activation_qualifying_sweeps` | Gauge | `network=mainnet\|testnet` | Consecutive qualifying in-process activation sweeps | remains < 3 after confirmation height |
+| `zeeder_activation_ready_groups` | Gauge | `network=mainnet\|testnet` | Groups qualifying in the latest in-process activation sweep | below 75% of total after confirmation height, where the floor is below the compiled target |
+| `zeeder_activation_total_groups` | Gauge | `network=mainnet\|testnet` | Groups sampled in the latest in-process activation sweep | < 12 after confirmation height, where the floor is below the compiled target |
+| `zeeder_activation_qualifying_sweeps` | Gauge | `network=mainnet\|testnet` | Consecutive qualifying in-process activation sweeps | remains < 3 after confirmation height, where the floor is below the compiled target |
 | `zeeder_build_info` | Gauge | `version`, `git_sha`, `network` | Build and network identification | - |
 | `zeeder_mutex_poisoning_total` | Counter | `network=mainnet\|testnet` | Mutex poisoning events | > 0 |
 | `zeeder_dns_rate_limited_total` | Counter | - | Rate-limited queries | Spike indicates attack |
@@ -682,6 +682,14 @@ address-book gauges (`candidate_set.*`, `pool.num_ready`, `pool.num_unready`,
 `zcash.net.in.bytes.total` and the `pool.*` load-shedding counters, do not, so
 their values combine both crawlers. Use the `zeeder_*` metrics above for
 per-network monitoring.
+
+Scope activation alerts to networks whose `zeeder_min_protocol_version` is below
+the compiled target's protocol version. A network confirmed from a persisted
+record returns from its observer immediately and publishes zero for every
+`zeeder_activation_*` gauge, so those values do not indicate a problem there.
+While the floor is below the target, a low ready-group count is expected until
+upgraded groups reach 75%. Sweeps run at least 125 seconds apart, so 3
+consecutive qualifying sweeps span at least 250 seconds.
 
 ### Prometheus Queries
 

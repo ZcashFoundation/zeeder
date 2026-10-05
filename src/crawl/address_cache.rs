@@ -489,6 +489,69 @@ mod tests {
     }
 
     #[test]
+    fn testnet_target_version_peers_fill_dns_responses_before_fallback_peers() {
+        let network = Network::new_default_testnet();
+        let unservable_version = Version(170_150);
+        let previous_version = Version(170_160);
+        let target_version = Version(170_180);
+        let book_with = |target_peers: u8| {
+            let mut book = AddressBook::new(
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 18233),
+                &network,
+                100,
+                Span::none(),
+            );
+            let peers = [
+                (20, target_peers, target_version),
+                (30, 14, previous_version),
+                (40, 1, unservable_version),
+            ];
+            for (first_octet, count, version) in peers {
+                for host in 1..=count {
+                    update_connected_peer_with_version(
+                        &mut book,
+                        peer([first_octet, 1, 1, host], 18233),
+                        PeerServices::NODE_NETWORK,
+                        false,
+                        version,
+                    );
+                }
+            }
+            book
+        };
+        let first_octets = |book: &AddressBook| -> Vec<u8> {
+            servable_peers(
+                book,
+                &network,
+                previous_version,
+                target_version,
+                "testnet",
+                false,
+            )
+            .ipv4
+            .iter()
+            .map(|addr| match addr.ip() {
+                IpAddr::V4(ip) => ip.octets()[0],
+                IpAddr::V6(_) => 0,
+            })
+            .collect()
+        };
+
+        let full = first_octets(&book_with(30));
+        assert_eq!(full.len(), MAX_DNS_RESPONSE_PEERS);
+        assert!(
+            full.iter().all(|octet| *octet == 20),
+            "a full target-version tier must exclude fallback peers from the response"
+        );
+
+        // Every servable peer fits in the sparse answer, so the floor check is exact.
+        let sparse = first_octets(&book_with(10));
+        assert_eq!(sparse.len(), 24);
+        assert!(sparse[..10].iter().all(|octet| *octet == 20));
+        assert!(sparse[10..].iter().all(|octet| *octet == 30));
+    }
+
+    #[test]
     fn fallback_peers_top_up_a_sparse_target_version_tier() {
         let mut book = empty_book();
         let previous_version = Version(170_150);

@@ -160,8 +160,28 @@ mod tests {
     fn confirmed_testnet_floor_matches_the_compiled_target() {
         assert_eq!(
             version_floor(&Network::new_default_testnet(), true),
+            Version(170_180)
+        );
+    }
+
+    /// Deploying a new target must not raise the floor by itself: until the
+    /// observer confirms NU7, Testnet keeps admitting NU6.3 peers, which stay
+    /// valid on the chain until activation.
+    #[test]
+    fn unconfirmed_testnet_floor_stays_at_the_previous_upgrade() {
+        assert_eq!(
+            version_floor(&Network::new_default_testnet(), false),
             Version(170_160)
         );
+    }
+
+    #[test]
+    fn no_chain_tip_fallback_is_pinned() {
+        // Isolated activation probes handshake at this floor, so it must stay at or
+        // below every compiled target's required version.
+        for network in [Network::Mainnet, Network::new_default_testnet()] {
+            assert_eq!(no_chain_tip_floor(&network), Version(170_150));
+        }
     }
 
     #[test]
