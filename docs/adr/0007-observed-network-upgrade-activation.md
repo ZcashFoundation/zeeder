@@ -17,9 +17,9 @@ Each crawler starts its `SeederChainTip` immediately below the newest compiled a
 - The observer uniformly samples at most 64 available IPv4 `/16` or IPv6 `/32` network groups, then chooses 1 recently live, outbound, full node from each selected group.
 - At least 12 network groups participate in a completed sweep.
 - At least 75% of the sampled groups report a start height at or above the activation height plus 1,000 blocks, negotiate the new protocol version, and advertise `NODE_NETWORK`.
-- The threshold holds for 3 consecutive sweeps, separated by the target block spacing. A timeout, failed handshake, or nonqualifying response remains in the denominator and counts as not ready.
+- The threshold holds for 3 consecutive sweeps, separated by the target block spacing at activation or Zebra's peer reconnection delay plus the probe timeout (125 seconds), whichever is longer. Zebra peers refuse a repeat inbound connection from one IPv4 address or IPv6 `/64` within 119 seconds, and a refused probe counts as not ready. A timeout, failed handshake, or nonqualifying response remains in the denominator and counts as not ready.
 
-The observer uses isolated Zcash handshakes whose floor remains at the previous upgrade, which lets it measure both old-version and new-version nodes. It does not use the maximum height, an average height, a decaying threshold, an external application programming interface (API), or a designated node.
+The observer uses isolated Zcash handshakes that apply zebra-network's no-chain-tip fallback floor (170150, NU6.2, for both networks). That floor is at or below the previous upgrade's floor, so the observer measures both old-version and new-version nodes, while sampling admits peers at the pre-activation floor. It does not use the maximum height, an average height, a decaying threshold, an external application programming interface (API), or a designated node.
 
 Before raising the floor, Zeeder atomically persists an exact record of the activation height, confirmation height, and required protocol version beside zebra-network's peer cache. A restart accepts only a record that exactly matches the compiled target. If the cache is disabled or the record cannot be written, the observer leaves the previous floor in place.
 
@@ -27,7 +27,7 @@ Admission and serving order remain separate decisions. Until the observer confir
 
 ## Rationale
 
-Network-group voting limits the weight of many addresses from one prefix, while uniform selection prevents prefixes containing more addresses from gaining extra sampling weight. The 64-group cap bounds concurrent handshakes and prevents an attacker-influenced address book from expanding the quorum denominator. The minimum group count prevents a small, internally consistent view from deciding activation, and a fixed 75% threshold requires a supermajority without allowing a stalled minority to block the transition indefinitely. Requiring 3 spaced sweeps rejects brief height spikes and transient partitions.
+Network-group voting limits the weight of many addresses from one prefix, while uniform selection prevents prefixes containing more addresses from gaining extra sampling weight. The 64-group cap bounds concurrent handshakes and prevents an attacker-influenced address book from expanding the quorum denominator. The minimum group count prevents a small, internally consistent view from deciding activation, and a fixed 75% threshold requires a supermajority without allowing a stalled minority to block the transition indefinitely. Requiring 3 spaced sweeps rejects brief height spikes and transient partitions. The probe timeout is added to Zebra's reconnection delay because a peer may accept a probe up to that long after a sweep starts.
 
 The 1,000-block delay reuses Zebra's local `MAX_BLOCK_REORG_HEIGHT` defense-in-depth policy; it is not a consensus finality guarantee. The delay is counted in blocks, so its duration follows the target spacing at activation: about 20.8 hours at the 75-second spacing used through NU6.3, and about 6.9 hours from NU7, which reduces the spacing to 25 seconds. Preferentially serving target-version peers reduces exposure during that window without letting an unauthenticated height report raise the admission floor.
 
@@ -42,8 +42,12 @@ The algorithm treats missing evidence conservatively. Failed and timed-out probe
 - Before confirmation, DNS responses prefer peers at the target protocol version and use peers at the previous admitted floor only as fallback capacity.
 - After confirmation, the servable-peer cache rechecks each peer's negotiated version against the new floor, which removes handshakes admitted under the previous floor from DNS responses immediately.
 - Peer start heights remain self-reported. An attacker that controls at least 75% of the sampled network groups, or fully eclipses a seeder, can still cause a false confirmation; this design raises the cost of false evidence but cannot authenticate chain work. A false confirmation is durable and remains active across restarts until an operator deletes its exact `.activation` record.
-- Operators must persist the cache directory for confirmation to survive a restart. Losing the record or loading a dependency whose compiled target no longer matches it returns the floor to the previous upgrade, even after activation, until fresh observation or an explicit operator attestation confirms the new target.
-- Operators can explicitly attest an already-activated target during a bootstrap migration. The command requires all target fields to match the compiled dependency values, but it deliberately bypasses peer observation and therefore transfers the activation decision to the operator.
+- Operators must persist the cache directory for confirmation to survive a restart. Losing the record, or loading a dependency whose compiled target no longer matches it (which Zeeder ignores with a warning), returns the floor to the previous upgrade, even after activation, until fresh observation or an explicit operator attestation confirms the new target.
+- Operators can explicitly attest a compiled target that is already past its confirmation height when the observer cannot confirm it. The command requires all target fields to match the compiled dependency values, but it deliberately bypasses peer observation and therefore transfers the activation decision to the operator.
+
+## Revision History
+
+- 2026-10-05: NU7's 25-second target spacing shortens the confirmation delay to about 6.9 hours. Sweeps are spaced at least 125 seconds apart to respect Zebra's per-IP reconnection limit. Operator attestation now covers any compiled target past its confirmation height that the observer cannot confirm, not only bootstrap migrations.
 
 ## Alternatives Considered
 

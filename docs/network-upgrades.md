@@ -11,11 +11,13 @@ The floor advances only after all of these conditions hold:
 - At most 64 available IPv4 `/16` or IPv6 `/32` network groups are selected uniformly, with 1 peer sampled from each selected group.
 - At least 12 groups participate.
 - At least 75% of those groups report the activation height plus Zebra's maximum reorganization depth, negotiate the target protocol version, and advertise `NODE_NETWORK`.
-- The same threshold holds for 3 consecutive sweeps, separated by the target block spacing.
+- The same threshold holds for 3 consecutive sweeps, separated by the target block spacing at activation or Zebra's peer reconnection delay plus the probe timeout (125 seconds), whichever is longer. Zebra peers refuse a repeat inbound connection from one IPv4 address or IPv6 `/64` within 119 seconds, and a refused probe counts as not ready.
 
 Failed handshakes and timeouts count as not ready, and any nonqualifying sweep resets the consecutive-sweep count. The algorithm does not use a maximum height, average height, decaying threshold, or wall-clock activation date. Peer heights are self-reported, so the network-group quorum limits raw-address Sybil weight but does not eliminate the risk of a group-supermajority attack or a complete eclipse.
 
-Before it raises the floor, Zeeder atomically writes an activation record beside zebra-network's peer cache. On restart, Zeeder accepts only a record that exactly matches the compiled activation height, confirmation height, and protocol version; a future dependency bump therefore requires fresh evidence for its new target.
+Before it raises the floor, Zeeder atomically writes an activation record beside zebra-network's peer cache. On restart, Zeeder accepts only a record that exactly matches the compiled activation height, confirmation height, and protocol version; a future dependency bump therefore requires fresh evidence for its new target. A record for an older target is ignored with a warning.
+
+The confirmation height is 1,000 blocks after activation, so the delay follows the target's block spacing: about 20.8 hours at 75 seconds, and about 6.9 hours at 25 seconds.
 
 ## Maintainer Procedure
 
@@ -28,7 +30,9 @@ Trigger this procedure when a Zebra release sets an upgrade activation height fo
 5. Fix Zebra API changes, and update any documentation invalidated by the release.
 6. Release Zeeder through the [release process](development.md#release-process).
 
-Deploying promptly gives the observer time to populate a diverse address book before activation. Deployment does not itself remove peers on the previous protocol version.
+Deploying promptly gives the observer time to populate a diverse address book before activation. Deployment does not itself remove peers on the previous protocol version, because the floor does not move at deploy time.
+
+After activation, upgraded peers refuse handshakes from a seeder that advertises an older protocol version. A seeder built before the target is known therefore loses those peers, so deploy a release that includes the target before activation.
 
 ## Operator Procedure
 
@@ -39,13 +43,13 @@ Replace the binary or image while preserving the cache volume:
 
 No network-upgrade configuration is required. Zones, nameservers, time to live values, DNS delegation, listener ports, and rate limits remain independent of the activation target.
 
-### Bootstrap an Already-Activated Target
+### Attest an Already-Activated Target
 
-The normal path is peer observation. An operator attestation is reserved for introducing this mechanism after a compiled target has already passed its confirmation height, because lowering the floor during that migration can re-admit abandoned previous-version peers and prevent a test network from reaching the 75% threshold.
+The normal path is peer observation. An operator attestation applies when a release's compiled target is already past its confirmation height but the observer cannot reach quorum, for example because most of a test network's peers have not upgraded. It is not a routine step.
 
-The `attest-activation` command requires the operator to supply the activation height, confirmation height, and minimum protocol version. It rejects the command unless all 3 values exactly match the target compiled into that Zeeder binary, then atomically writes the same confirmation record the observer would write. Exact matching prevents a stale command from confirming a future dependency-provided target; it does not verify chain state. Running this command is an explicit operator assertion that the network has independently been verified beyond the supplied confirmation height.
+The `attest-activation` command requires the operator to supply the activation height, confirmation height, and minimum protocol version. It rejects the command unless all 3 values exactly match the target compiled into that Zeeder binary, and the rejection error prints the expected triple. On a match, it atomically writes the same confirmation record the observer would write. Exact matching prevents a stale command from confirming a future dependency-provided target; it does not verify chain state. Running this command is an explicit operator assertion that the network has independently been verified beyond the supplied confirmation height.
 
-For the first rollout of observed activation, preseed Testnet's already-activated NU6.3 target on every instance before starting the new seeder:
+A running seeder reads the confirmation record only at startup, so stop the seeder, run the command, then start it. Attestation raises the floor, which drops previous-version peers from DNS. When few peers have upgraded, the answer set can be small. Verify the chain independently before attesting. The following examples use the Testnet NU7 target:
 
 ```bash
 # Container deployment: stop the old seeder, then use the new pinned image.
@@ -56,9 +60,9 @@ docker run --rm \
   attest-activation \
   --network testnet \
   --cache-dir /cache/zebra \
-  --activation-height 4134000 \
-  --confirmation-height 4135000 \
-  --minimum-protocol-version 170160
+  --activation-height 4465026 \
+  --confirmation-height 4466026 \
+  --minimum-protocol-version 170180
 ```
 
 ```bash
@@ -66,9 +70,9 @@ docker run --rm \
 sudo -u zeeder /opt/zeeder/zeeder attest-activation \
   --network testnet \
   --cache-dir /var/cache/zeeder/zebra \
-  --activation-height 4134000 \
-  --confirmation-height 4135000 \
-  --minimum-protocol-version 170160
+  --activation-height 4465026 \
+  --confirmation-height 4466026 \
+  --minimum-protocol-version 170180
 ```
 
 Do not add this command to a recurring startup script. A recurring attestation would automatically approve every future compiled target and bypass the independent observer.
@@ -104,9 +108,10 @@ An observed or operator-attested confirmation is sticky because the matching rec
 | Question | Answer |
 |----------|--------|
 | Does an upgrade require Zeeder configuration changes? | No |
-| Can the new image be deployed before activation? | Yes; deployment keeps the previous floor |
-| What causes the floor to rise? | 75% of a uniform sample of 12 to 64 network groups qualifying across 3 consecutive sweeps after the confirmation height |
+| Can the new image be deployed before activation? | Yes; deployment keeps the previous floor. After activation, upgraded peers refuse a seeder that advertises an older protocol version, so a seeder built before the target is known loses them |
+| What causes the floor to rise? | 75% of a uniform sample of 12 to 64 network groups qualifying across 3 consecutive sweeps, at least 125 seconds apart, after the confirmation height |
 | Does Zeeder depend on a node or endpoint? | No; each instance observes peers from its own address book |
 | Must the peer cache be cleared? | No; preserve it for observation and restart continuity |
-| How is an already-activated target bootstrapped? | Run one exact `attest-activation` command per instance; never put it in recurring startup |
+| When is attestation appropriate? | Only when the compiled target is past its confirmation height and the observer cannot reach quorum; run one exact `attest-activation` command per instance and never put it in recurring startup |
+| How long after activation does the floor rise? | At least 1,000 blocks: about 20.8 hours at 75 seconds per block, about 6.9 hours at 25 seconds |
 | What is the recovery control? | Delete only the affected `.activation` record, then restart |
