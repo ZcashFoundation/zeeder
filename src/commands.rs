@@ -227,11 +227,11 @@ mod tests {
             "--cache-dir",
             "/cache/zebra",
             "--activation-height",
-            "4134000",
+            "4465026",
             "--confirmation-height",
-            "4135000",
+            "4466026",
             "--minimum-protocol-version",
-            "170160",
+            "170180",
         ])?;
 
         assert!(matches!(
@@ -239,9 +239,9 @@ mod tests {
             Commands::AttestActivation {
                 network: ZcashNetwork::Testnet,
                 cache_dir,
-                activation_height: 4_134_000,
-                confirmation_height: 4_135_000,
-                minimum_protocol_version: 170_160,
+                activation_height: 4_465_026,
+                confirmation_height: 4_466_026,
+                minimum_protocol_version: 170_180,
             } if cache_dir == std::path::Path::new("/cache/zebra")
         ));
         Ok(())

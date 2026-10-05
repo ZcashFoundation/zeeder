@@ -176,6 +176,15 @@ mod tests {
     }
 
     #[test]
+    fn no_chain_tip_fallback_is_pinned() {
+        // Isolated activation probes handshake at this floor, so it must stay at or
+        // below every compiled target's required version.
+        for network in [Network::Mainnet, Network::new_default_testnet()] {
+            assert_eq!(no_chain_tip_floor(&network), Version(170_150));
+        }
+    }
+
+    #[test]
     fn chain_tip_does_not_lower_no_chain_tip_fallback() {
         // The pre-activation tip must not lower Zebra's previous-upgrade
         // fallback while the observer gathers evidence.

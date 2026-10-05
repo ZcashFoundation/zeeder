@@ -26,7 +26,9 @@ use zebra_chain::{
     parameters::{Network, NetworkUpgrade, constants::MAX_BLOCK_REORG_HEIGHT},
 };
 use zebra_network::{
-    AddressBook, PeerSocketAddr, Version, config::CacheDir, constants::HANDSHAKE_TIMEOUT,
+    AddressBook, PeerSocketAddr, Version,
+    config::CacheDir,
+    constants::{HANDSHAKE_TIMEOUT, MIN_PEER_RECONNECTION_DELAY},
     types::PeerServices,
 };
 
@@ -54,6 +56,14 @@ const REQUIRED_QUALIFYING_SWEEPS: u8 = 3;
 
 /// Allow both the TCP connection and version handshake to complete.
 const OBSERVATION_TIMEOUT: Duration = HANDSHAKE_TIMEOUT.saturating_mul(2);
+
+/// Minimum observer sweep interval.
+///
+/// Zebra peers refuse a second inbound connection from the same IPv4 address
+/// or IPv6 /64 within the reconnection delay, and a refused probe counts as not
+/// ready. Acceptance can also shift by up to the observation timeout.
+const MIN_SWEEP_INTERVAL: Duration =
+    MIN_PEER_RECONNECTION_DELAY.saturating_add(OBSERVATION_TIMEOUT);
 
 /// The newest compiled activation and the evidence required to confirm it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,11 +203,8 @@ pub(crate) fn spawn(
         }
 
         let zcash_network = network.to_zebra();
-        let sweep_interval =
-            NetworkUpgrade::target_spacing_for_height(&zcash_network, target.activation_height)
-                .to_std()
-                .unwrap_or(Duration::from_secs(75));
-        let mut interval = tokio::time::interval(sweep_interval);
+        let mut interval =
+            tokio::time::interval(sweep_interval(&zcash_network, target.activation_height));
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut gate = ActivationGate::default();
 
@@ -270,6 +277,13 @@ pub(crate) fn spawn(
 struct SweepEvidence {
     total_groups: usize,
     ready_groups: usize,
+}
+
+fn sweep_interval(network: &Network, activation_height: Height) -> Duration {
+    NetworkUpgrade::target_spacing_for_height(network, activation_height)
+        .to_std()
+        .unwrap_or(Duration::from_secs(75))
+        .max(MIN_SWEEP_INTERVAL)
 }
 
 #[allow(
@@ -570,6 +584,35 @@ mod tests {
     }
 
     #[test]
+    fn sweep_interval_respects_the_peer_reconnection_delay() {
+        for network in [Network::Mainnet, Network::new_default_testnet()] {
+            let target = ActivationTarget::latest(&network);
+
+            assert_eq!(
+                sweep_interval(&network, target.activation_height),
+                Duration::from_secs(125)
+            );
+        }
+    }
+
+    #[test]
+    fn v1_6_3_mainnet_confirmation_record_still_matches() {
+        let record = "activation_height=3428143\nconfirmation_height=3429143\nminimum_protocol_version=170160\n";
+
+        assert!(ActivationTarget::latest(&Network::Mainnet).matches_confirmation_record(record));
+    }
+
+    #[test]
+    fn nu6_3_testnet_confirmation_record_no_longer_matches() {
+        let record = "activation_height=4134000\nconfirmation_height=4135000\nminimum_protocol_version=170160\n";
+
+        assert!(
+            !ActivationTarget::latest(&Network::new_default_testnet())
+                .matches_confirmation_record(record)
+        );
+    }
+
+    #[test]
     fn persisted_confirmation_must_match_the_compiled_target_exactly() {
         let target = ActivationTarget::latest(&Network::Mainnet);
         let record = target.confirmation_record();
@@ -600,19 +643,26 @@ mod tests {
     #[tokio::test]
     async fn operator_attestation_rejects_a_mismatched_compiled_target() {
         let cache_dir = CacheDir::custom_path(std::env::temp_dir());
-        let result = attest_confirmation(
-            &cache_dir,
-            &Network::new_default_testnet(),
-            4_134_000,
-            4_135_000,
-            170_150,
-        )
-        .await;
 
-        assert!(matches!(
-            result,
-            Err(error) if error.kind() == io::ErrorKind::InvalidInput
-        ));
+        for (activation, confirmation, version) in [
+            (4_465_026, 4_466_026, 170_160),
+            (4_465_026, 4_466_025, 170_180),
+            (4_465_025, 4_466_026, 170_180),
+        ] {
+            let result = attest_confirmation(
+                &cache_dir,
+                &Network::new_default_testnet(),
+                activation,
+                confirmation,
+                version,
+            )
+            .await;
+
+            assert!(matches!(
+                result,
+                Err(error) if error.kind() == io::ErrorKind::InvalidInput
+            ));
+        }
     }
 
     #[tokio::test]
