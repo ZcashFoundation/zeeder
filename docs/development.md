@@ -388,10 +388,12 @@ The `Release` workflow (`.github/workflows/release.yml`) publishes everything
 else. It fails fast when the tag does not match the `Cargo.toml` version, then:
 
 - Publishes the release to Docker Hub as one multi-arch image (`linux/amd64`,
-  `linux/arm64`) tagged `zfnd/dnsseeder:1.2.3`, `zfnd/dnsseeder:v1.2.3`, and
-  `zfnd/dnsseeder:latest`, signed with Cosign and carrying build-provenance
-  and SBOM attestations. All tags share one digest, so verification commands
-  work against any of them.
+  `linux/arm64`) tagged `1.2.3`, `v1.2.3`, and `latest` in two repositories,
+  `zfnd/dnsseeder` and `zfnd/zeeder`. Both repositories receive the same
+  manifest, and the workflow fails if their digests differ. Each is signed
+  with Cosign and carries its own build-provenance and SBOM attestations, so
+  verification commands work against either name and any tag. The fleet still
+  pins `zfnd/dnsseeder` until the rename in issue #55 completes.
 - Attaches `zeeder` archives for `x86_64` and `aarch64` Linux to the GitHub
   release, with per-file checksums, a `SHA256SUMS` manifest, and a Sigstore
   signature bundle over that manifest. Binaries are built on Ubuntu 22.04 for
@@ -405,8 +407,8 @@ paths succeed.
 
 Docker Hub publishing requires the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
 secrets in the `release` GitHub environment. Docker Hub has no OIDC federation,
-so use an organization access token scoped to Image Push on `zfnd/dnsseeder`
-with an expiration date, and rotate it when it expires. The image jobs run in
+so use an organization access token scoped to Image Push on both `zfnd/dnsseeder`
+and `zfnd/zeeder`, with an expiration date, and rotate it when it expires. The image jobs run in
 the `release` environment, so protection rules added to that environment (such
 as required reviewers) gate publishing.
 
