@@ -415,8 +415,13 @@ async fn observe_sweep(
 
     let mut ready_groups = 0;
     while let Some(joined) = probes.join_next().await {
-        // A panicked probe task is a failed handshake as far as evidence goes.
-        let outcome = joined.unwrap_or(ProbeOutcome::HandshakeFailed);
+        // A join error is our own task panicking or being cancelled, not the
+        // peer refusing us, so it gets its own outcome instead of skewing
+        // `handshake_failed`. It still counts as not ready.
+        let outcome = joined.unwrap_or_else(|error| {
+            tracing::error!(network = network_label, %error, "activation probe task failed");
+            ProbeOutcome::ProbeTaskFailed
+        });
         counter!(
             ACTIVATION_PROBES_TOTAL,
             LABEL_NETWORK => network_label,
@@ -448,6 +453,7 @@ enum ProbeOutcome {
     BelowConfirmationHeight,
     OutdatedVersion,
     NotFullNode,
+    ProbeTaskFailed,
 }
 
 impl ProbeOutcome {
@@ -460,6 +466,7 @@ impl ProbeOutcome {
             Self::BelowConfirmationHeight => "below_confirmation_height",
             Self::OutdatedVersion => "outdated_version",
             Self::NotFullNode => "not_full_node",
+            Self::ProbeTaskFailed => "probe_task_failed",
         }
     }
 
@@ -680,6 +687,7 @@ mod tests {
             ProbeOutcome::BelowConfirmationHeight,
             ProbeOutcome::OutdatedVersion,
             ProbeOutcome::NotFullNode,
+            ProbeOutcome::ProbeTaskFailed,
         ]
         .map(ProbeOutcome::label);
 
