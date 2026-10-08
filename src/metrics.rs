@@ -11,6 +11,8 @@ pub(crate) const MIN_PROTOCOL_VERSION: &str = "zeeder_min_protocol_version";
 pub(crate) const ACTIVATION_READY_GROUPS: &str = "zeeder_activation_ready_groups";
 pub(crate) const ACTIVATION_TOTAL_GROUPS: &str = "zeeder_activation_total_groups";
 pub(crate) const ACTIVATION_QUALIFYING_SWEEPS: &str = "zeeder_activation_qualifying_sweeps";
+pub(crate) const ACTIVATION_PROBES_TOTAL: &str = "zeeder_activation_probes_total";
+pub(crate) const ACTIVATION_CONFIRMED: &str = "zeeder_activation_confirmed";
 pub(crate) const BUILD_INFO: &str = "zeeder_build_info";
 pub(crate) const MUTEX_POISONING_TOTAL: &str = "zeeder_mutex_poisoning_total";
 pub(crate) const DNS_RATE_LIMITED_TOTAL: &str = "zeeder_dns_rate_limited_total";
@@ -24,6 +26,7 @@ pub(crate) const LABEL_RECORD_TYPE: &str = "record_type";
 pub(crate) const LABEL_VERSION: &str = "version";
 pub(crate) const LABEL_GIT_SHA: &str = "git_sha";
 pub(crate) const LABEL_NETWORK: &str = "network";
+pub(crate) const LABEL_OUTCOME: &str = "outcome";
 
 pub(crate) const ADDR_FAMILY_IPV4: &str = "v4";
 pub(crate) const ADDR_FAMILY_IPV6: &str = "v6";
