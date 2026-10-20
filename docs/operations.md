@@ -465,11 +465,21 @@ push or release made with `GITHUB_TOKEN` does not start a new workflow run; an
 event-driven chain would stop after the pin, silently. The call keeps the whole
 sequence inside one run.
 
-Cloud access is keyless, and the fleet inventory is injected from a repository
-variable into a runner-temp file (`FLEET_CONF_FILE`) and masked before any step
-can log it, so no plaintext inventory ever lands in the repository or a
-checkout. It is configuration, not a credential: nothing in it grants access,
-which is decided by IAM, so a readable variable keeps it maintainable.
+Cloud access is keyless. The fleet inventory (`FLEET_CONF`), the deployer
+service account (`GCP_SERVICE_ACCOUNT`), and the workload identity provider
+(`GCP_WIF`) are configuration, not credentials: nothing in them grants access,
+which is decided by IAM, so they stay in readable, editable variables.
+
+The workflow logs are public, and Actions prints each step's resolved `env`,
+`with`, and `run` values before the step can register a mask. So `deploy.yml`
+passes the three variables as secrets to the reusable `deploy-roll.yml`, whose
+runner masks them from the start of the job. The roll job then writes the
+inventory to a runner-temp file (`FLEET_CONF_FILE`) and masks the project IDs,
+service accounts, project number, and VM names that later steps print on their
+own. No plaintext inventory lands in the repository or a checkout.
+
+Keep these as repository or organization variables. The calling job has no
+environment, so it cannot read a variable defined only on `production`.
 
 The workflow needs a one-time configuration before it can run: keyless CI
 authentication to the fleet project, the variables referenced by `deploy.yml`,

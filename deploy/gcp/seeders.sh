@@ -87,6 +87,8 @@ selected() {
   [ -z "${ONLY}" ] || [ "${ONLY}" = "$1" ] || [ "${ONLY}" = "$2" ]
 }
 
+# .github/workflows/deploy-roll.yml masks field 1 of each row as the VM name;
+# update it with any change to this row schema.
 each_selected() {
   local callback="$1" count=0 row name zone region ns
   for row in "${SEEDERS[@]}"; do
