@@ -45,7 +45,7 @@ No network-upgrade configuration is required. Zones, nameservers, time to live v
 
 ### Attest an Already-Activated Target
 
-The normal path is peer observation. An operator attestation applies when a release's compiled target is already past its confirmation height but the observer cannot reach quorum, for example because most of a test network's peers have not upgraded. It is not a routine step.
+The normal path is peer observation. An operator attestation applies when a release's compiled target is already past its confirmation height but the observer cannot reach quorum, for example because most of a test network's peers have not upgraded. Check the `zeeder_activation_probes_total` outcomes first: refused or unanswered handshakes point to a probing problem rather than to peers that have not upgraded. It is not a routine step.
 
 The `attest-activation` command requires the operator to supply the activation height, confirmation height, and minimum protocol version. It rejects the command unless all 3 values exactly match the target compiled into that Zeeder binary, and the rejection error prints the expected triple. On a match, it atomically writes the same confirmation record the observer would write. Exact matching prevents a stale command from confirming a future dependency-provided target; it does not verify chain state. Running this command is an explicit operator assertion that the network has independently been verified beyond the supplied confirmation height.
 
@@ -80,10 +80,10 @@ Do not add this command to a recurring startup script. A recurring attestation w
 ### Verify the Floor
 
 ```bash
-curl -s http://127.0.0.1:9999/metrics | grep -E 'zeeder_min_protocol_version|zeeder_activation_(ready_groups|total_groups|qualifying_sweeps)|zeeder_peers_(servable|unservable)'
+curl -s http://127.0.0.1:9999/metrics | grep -E 'zeeder_min_protocol_version|zeeder_activation_(confirmed|ready_groups|total_groups|qualifying_sweeps|probes_total)|zeeder_peers_(servable|unservable)'
 ```
 
-Before observer confirmation, `zeeder_min_protocol_version` reports the previous upgrade's floor, and nodes valid under that floor remain eligible for DNS. DNS answers prefer target-version peers and use previous-version peers only to fill remaining response capacity. The activation gauges and the `activation observation sweep` log report total groups, ready groups, and consecutive qualifying sweeps.
+Before observer confirmation, `zeeder_min_protocol_version` reports the previous upgrade's floor, and nodes valid under that floor remain eligible for DNS. DNS answers prefer target-version peers and use previous-version peers only to fill remaining response capacity. The activation gauges and the `activation observation sweep` log report total groups, ready groups, and consecutive qualifying sweeps. `zeeder_activation_confirmed` reports `1` once the target is confirmed, and `zeeder_activation_probes_total` counts each probe's outcome, which shows why groups do not qualify. [Operations](operations.md#metrics) explains each outcome.
 
 After the confirmation height and quorum requirements are met, the floor metric moves to the new protocol version. zebra-network reads the new height while handshaking and polling its peer set, and the next 5-second address-cache refresh removes already-handshaked peers below the new floor from DNS.
 
