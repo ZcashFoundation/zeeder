@@ -38,14 +38,10 @@ concurrency:
   queue: max
 
 jobs:
-  # The fleet inventory and the deployer identity are configuration, not
-  # credentials, so they live in variables that stay readable and editable.
-  # Variables are not masked, this repository's workflow logs are public, and a
-  # step prints its resolved env, with, and run values before any command in it
-  # can register a mask. Passing them as secrets into the called workflow makes
-  # its runner mask them from job start. They must stay repository or
-  # organization variables: this calling job has no environment, so it cannot
-  # read one defined only on production.
+  # Passing these variables as secrets makes the called workflow's runner mask
+  # them before any step prints them (see docs/operations.md). They must stay
+  # repository or organization variables: this job has no environment, so it
+  # cannot read one defined only on production.
   deploy:
     permissions:
       contents: read

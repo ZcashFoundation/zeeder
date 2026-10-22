@@ -1,6 +1,5 @@
-# Runs deploy/gcp/seeders.sh --roll for the "Deploy seeders" workflow. Only
-# deploy.yml calls this; it passes the fleet identifiers in as secrets so the
-# runner masks them before any step prints them.
+# Runs deploy/gcp/seeders.sh --roll for the "Deploy seeders" workflow, which
+# passes the fleet identifiers in as secrets.
 name: Roll seeders
 
 on:
@@ -65,9 +64,7 @@ jobs:
           # projects/<number>/locations/global/workloadIdentityPools/...
           wif_path="${WIF_PROVIDER#projects/}"
           echo "::add-mask::${wif_path%%/*}"
-          # Field 1 is the VM name — same row schema as each_selected() in
-          # seeders.sh (name|zone|region|ns). Keep the two in sync: a schema
-          # change that lands only there would silently mask the wrong field.
+          # Field 1 is the VM name (see each_selected() in seeders.sh).
           for row in "${SEEDERS[@]}"; do
             echo "::add-mask::${row%%|*}"
           done
