@@ -17,16 +17,20 @@ use std::{
 };
 
 use chrono::Utc;
-use metrics::gauge;
+use metrics::{counter, gauge};
 use rand::{rng, seq::SliceRandom};
-use tokio::{task::JoinHandle, task::JoinSet, time::MissedTickBehavior};
+use tokio::{
+    task::JoinHandle,
+    task::JoinSet,
+    time::{MissedTickBehavior, error::Elapsed},
+};
 use zebra_chain::{
     block::Height,
     common::atomic_write,
     parameters::{Network, NetworkUpgrade, constants::MAX_BLOCK_REORG_HEIGHT},
 };
 use zebra_network::{
-    AddressBook, PeerSocketAddr, Version,
+    AddressBook, HandshakeError, PeerSocketAddr, Version,
     config::CacheDir,
     constants::{HANDSHAKE_TIMEOUT, MIN_PEER_RECONNECTION_DELAY},
     types::PeerServices,
@@ -36,8 +40,9 @@ use crate::{
     config::ZcashNetwork,
     crawl::{chain_tip::SeederChainTip, servability::classify_peer},
     metrics::{
-        ACTIVATION_QUALIFYING_SWEEPS, ACTIVATION_READY_GROUPS, ACTIVATION_TOTAL_GROUPS,
-        LABEL_NETWORK, MIN_PROTOCOL_VERSION,
+        ACTIVATION_CONFIRMED, ACTIVATION_PROBES_TOTAL, ACTIVATION_QUALIFYING_SWEEPS,
+        ACTIVATION_READY_GROUPS, ACTIVATION_TOTAL_GROUPS, LABEL_NETWORK, LABEL_OUTCOME,
+        MIN_PROTOCOL_VERSION,
     },
 };
 
@@ -198,8 +203,21 @@ pub(crate) fn spawn(
         let network_label = network.label();
         publish_observation_metrics(network_label, SweepEvidence::default(), 0);
 
-        if tip.is_activation_confirmed() {
+        let already_confirmed = tip.is_activation_confirmed();
+        gauge!(ACTIVATION_CONFIRMED, LABEL_NETWORK => network_label)
+            .set(f64::from(u8::from(already_confirmed)));
+        if already_confirmed {
             return;
+        }
+
+        // Publish every outcome at zero, so `increase()` sees each one's first probe.
+        for outcome in ProbeOutcome::ALL {
+            counter!(
+                ACTIVATION_PROBES_TOTAL,
+                LABEL_NETWORK => network_label,
+                LABEL_OUTCOME => outcome.label()
+            )
+            .increment(0);
         }
 
         let zcash_network = network.to_zebra();
@@ -221,6 +239,7 @@ pub(crate) fn spawn(
                 zcash_network.clone(),
                 user_agent.clone(),
                 target,
+                network_label,
             )
             .await;
             let confirmed = gate.observe(evidence);
@@ -260,6 +279,7 @@ pub(crate) fn spawn(
             tip.confirm_activation();
             gauge!(MIN_PROTOCOL_VERSION, LABEL_NETWORK => network_label)
                 .set(f64::from(target.required_version.0));
+            gauge!(ACTIVATION_CONFIRMED, LABEL_NETWORK => network_label).set(1.0);
             tracing::info!(
                 network = network_label,
                 activation_height = target.activation_height.0,
@@ -396,6 +416,7 @@ async fn observe_sweep(
     network: Network,
     user_agent: String,
     target: ActivationTarget,
+    network_label: &'static str,
 ) -> SweepEvidence {
     let total_groups = sampled_peers.len();
     let mut probes = JoinSet::new();
@@ -407,8 +428,21 @@ async fn observe_sweep(
     }
 
     let mut ready_groups = 0;
-    while let Some(probe_outcome) = probes.join_next().await {
-        if matches!(probe_outcome, Ok(true)) {
+    while let Some(joined) = probes.join_next().await {
+        // A join error is our own task panicking or being cancelled, not the
+        // peer refusing us, so it gets its own outcome instead of skewing
+        // `handshake_failed`. It still counts as not ready.
+        let outcome = joined.unwrap_or_else(|error| {
+            tracing::error!(network = network_label, %error, "activation probe task failed");
+            ProbeOutcome::ProbeTaskFailed
+        });
+        counter!(
+            ACTIVATION_PROBES_TOTAL,
+            LABEL_NETWORK => network_label,
+            LABEL_OUTCOME => outcome.label()
+        )
+        .increment(1);
+        if outcome == ProbeOutcome::Ready {
             ready_groups += 1;
         }
     }
@@ -419,21 +453,129 @@ async fn observe_sweep(
     }
 }
 
+/// Why one sampled peer did or did not count towards the quorum.
+///
+/// Only [`ProbeOutcome::Ready`] counts. The others are exported per network so
+/// a stalled observer shows why it is stalled: connections nobody accepts,
+/// peers that accept and then hang up, handshakes that never answer, or peers
+/// that answer but are behind, outdated, or not full nodes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProbeOutcome {
+    /// The peer meets every condition and counts towards the quorum.
+    Ready,
+    /// The TCP connection failed, for example because nothing listens there.
+    ConnectFailed,
+    /// The peer accepted the connection, then closed or reset it during the
+    /// handshake, as Zebra does when its inbound slots are full or it accepted
+    /// another connection from the same address too recently.
+    HandshakeClosed,
+    /// The peer did not complete the connection or answer the handshake in time.
+    HandshakeTimeout,
+    /// The handshake failed for another protocol reason.
+    HandshakeFailed,
+    /// The peer reported a start height below the confirmation height.
+    BelowConfirmationHeight,
+    /// The peer's protocol version is below the target, including versions
+    /// zebra-network rejects as obsolete during the handshake.
+    OutdatedVersion,
+    /// The peer does not advertise `NODE_NETWORK`.
+    NotFullNode,
+    /// The probe task itself panicked or was cancelled; not a peer result.
+    ProbeTaskFailed,
+}
+
+impl ProbeOutcome {
+    /// Every outcome, in the order the metric documentation lists them.
+    const ALL: [Self; 9] = [
+        Self::Ready,
+        Self::ConnectFailed,
+        Self::HandshakeClosed,
+        Self::HandshakeTimeout,
+        Self::HandshakeFailed,
+        Self::BelowConfirmationHeight,
+        Self::OutdatedVersion,
+        Self::NotFullNode,
+        Self::ProbeTaskFailed,
+    ];
+
+    /// Stable `outcome` metric label.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::ConnectFailed => "connect_failed",
+            Self::HandshakeClosed => "handshake_closed",
+            Self::HandshakeTimeout => "handshake_timeout",
+            Self::HandshakeFailed => "handshake_failed",
+            Self::BelowConfirmationHeight => "below_confirmation_height",
+            Self::OutdatedVersion => "outdated_version",
+            Self::NotFullNode => "not_full_node",
+            Self::ProbeTaskFailed => "probe_task_failed",
+        }
+    }
+
+    /// Classify a handshake that returned an error.
+    ///
+    /// zebra-network bounds the version exchange with its own
+    /// `HANDSHAKE_TIMEOUT` and returns the elapsed timer as the error, so a
+    /// peer that accepts the connection but never answers arrives here rather
+    /// than at the outer [`OBSERVATION_TIMEOUT`].
+    fn of_handshake_error(error: &(dyn std::error::Error + Send + Sync + 'static)) -> Self {
+        if error.is::<Elapsed>() {
+            return Self::HandshakeTimeout;
+        }
+        if let Some(error) = error.downcast_ref::<HandshakeError>() {
+            return match error {
+                HandshakeError::Timeout => Self::HandshakeTimeout,
+                HandshakeError::ConnectionClosed | HandshakeError::Io(_) => Self::HandshakeClosed,
+                HandshakeError::ObsoleteVersion(_) => Self::OutdatedVersion,
+                HandshakeError::UnexpectedMessage(_)
+                | HandshakeError::RemoteNonceReuse
+                | HandshakeError::LocalDuplicateNonce
+                | HandshakeError::Serialization(_)
+                | HandshakeError::MissingRequiredServices { .. } => Self::HandshakeFailed,
+            };
+        }
+        if error.is::<io::Error>() {
+            Self::ConnectFailed
+        } else {
+            Self::HandshakeFailed
+        }
+    }
+
+    /// Classify a completed handshake, reporting the first unmet condition.
+    fn of_handshake(
+        start_height: Height,
+        version: Version,
+        services: PeerServices,
+        target: ActivationTarget,
+    ) -> Self {
+        if start_height < target.confirmation_height {
+            Self::BelowConfirmationHeight
+        } else if version < target.required_version {
+            Self::OutdatedVersion
+        } else if !services.contains(PeerServices::NODE_NETWORK) {
+            Self::NotFullNode
+        } else {
+            Self::Ready
+        }
+    }
+}
+
 async fn observe_peer(
     network: Network,
     addr: PeerSocketAddr,
     user_agent: String,
     target: ActivationTarget,
-) -> bool {
+) -> ProbeOutcome {
     let handshake = zebra_network::connect_isolated_tcp_direct(&network, addr, user_agent);
-    let Ok(Ok(client)) = tokio::time::timeout(OBSERVATION_TIMEOUT, handshake).await else {
-        return false;
+    let client = match tokio::time::timeout(OBSERVATION_TIMEOUT, handshake).await {
+        Err(_elapsed) => return ProbeOutcome::HandshakeTimeout,
+        Ok(Err(error)) => return ProbeOutcome::of_handshake_error(&*error),
+        Ok(Ok(client)) => client,
     };
     let remote = &client.connection_info.remote;
 
-    remote.start_height >= target.confirmation_height
-        && remote.version >= target.required_version
-        && remote.services.contains(PeerServices::NODE_NETWORK)
+    ProbeOutcome::of_handshake(remote.start_height, remote.version, remote.services, target)
 }
 
 async fn persist_confirmation(path: Option<PathBuf>, target: ActivationTarget) -> io::Result<()> {
@@ -461,7 +603,7 @@ mod tests {
 
     use super::*;
     use zebra_chain::{block::Height, parameters::Network};
-    use zebra_network::{Version, config::CacheDir};
+    use zebra_network::{BoxError, Version, config::CacheDir};
 
     #[test]
     fn half_ready_never_confirms() {
@@ -581,6 +723,150 @@ mod tests {
         assert_eq!(target.confirmation_height, Height(4_466_026));
         assert_eq!(target.required_version, Version(170_180));
         assert_eq!(target.pre_activation_height, Height(4_465_025));
+    }
+
+    #[test]
+    fn probe_outcome_reports_the_first_unmet_condition() {
+        let target = ActivationTarget::latest(&Network::Mainnet);
+        let tall = target.confirmation_height;
+        let short = target.pre_activation_height;
+        let current = target.required_version;
+        let old = Version(target.required_version.0 - 10);
+        let full = PeerServices::NODE_NETWORK;
+        let partial = PeerServices::empty();
+
+        let cases = [
+            (tall, current, full, ProbeOutcome::Ready),
+            (
+                Height(tall.0 - 1),
+                current,
+                full,
+                ProbeOutcome::BelowConfirmationHeight,
+            ),
+            (short, old, partial, ProbeOutcome::BelowConfirmationHeight),
+            (tall, old, partial, ProbeOutcome::OutdatedVersion),
+            (tall, current, partial, ProbeOutcome::NotFullNode),
+        ];
+        for (height, version, services, expected) in cases {
+            assert_eq!(
+                ProbeOutcome::of_handshake(height, version, services, target),
+                expected,
+                "height={height:?} version={version:?} services={services:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn probe_outcome_classifies_handshake_errors() {
+        let cases: [(BoxError, ProbeOutcome); 8] = [
+            (
+                io::Error::from(io::ErrorKind::ConnectionRefused).into(),
+                ProbeOutcome::ConnectFailed,
+            ),
+            (
+                HandshakeError::ConnectionClosed.into(),
+                ProbeOutcome::HandshakeClosed,
+            ),
+            (
+                HandshakeError::Io(io::ErrorKind::ConnectionReset.into()).into(),
+                ProbeOutcome::HandshakeClosed,
+            ),
+            (
+                HandshakeError::Timeout.into(),
+                ProbeOutcome::HandshakeTimeout,
+            ),
+            (
+                HandshakeError::ObsoleteVersion(Version(170_100)).into(),
+                ProbeOutcome::OutdatedVersion,
+            ),
+            (
+                HandshakeError::RemoteNonceReuse.into(),
+                ProbeOutcome::HandshakeFailed,
+            ),
+            (
+                HandshakeError::LocalDuplicateNonce.into(),
+                ProbeOutcome::HandshakeFailed,
+            ),
+            ("unrecognized error".into(), ProbeOutcome::HandshakeFailed),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(
+                ProbeOutcome::of_handshake_error(&*error),
+                expected,
+                "{error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_reports_a_closed_port_as_connect_failed() -> Result<(), Box<dyn Error>> {
+        let addr = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?.local_addr()?;
+
+        assert_eq!(probe_local(addr).await, ProbeOutcome::ConnectFailed);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn probe_reports_a_peer_that_hangs_up_as_handshake_closed() -> Result<(), Box<dyn Error>>
+    {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+        tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+
+        assert_eq!(probe_local(addr).await, ProbeOutcome::HandshakeClosed);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn probe_reports_a_silent_peer_as_handshake_timeout() -> Result<(), Box<dyn Error>> {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                // Hold the connection open without ever answering.
+                tokio::spawn(async move {
+                    std::future::pending::<()>().await;
+                    drop(stream);
+                });
+            }
+        });
+
+        assert_eq!(probe_local(addr).await, ProbeOutcome::HandshakeTimeout);
+
+        Ok(())
+    }
+
+    async fn probe_local(addr: SocketAddr) -> ProbeOutcome {
+        observe_peer(
+            Network::Mainnet,
+            PeerSocketAddr::from(addr),
+            "zeeder-test".to_owned(),
+            ActivationTarget::latest(&Network::Mainnet),
+        )
+        .await
+    }
+
+    #[test]
+    fn probe_outcome_labels_are_distinct() {
+        let labels = ProbeOutcome::ALL.map(ProbeOutcome::label);
+
+        assert_eq!(labels.iter().collect::<HashSet<_>>().len(), labels.len());
+    }
+
+    #[test]
+    fn operations_docs_list_every_probe_outcome() {
+        let operations_docs = include_str!("../../docs/operations.md");
+        let outcomes = format!(
+            "`{LABEL_OUTCOME}={}`",
+            ProbeOutcome::ALL.map(ProbeOutcome::label).join("\\|")
+        );
+
+        assert!(
+            operations_docs.contains(&outcomes),
+            "docs/operations.md should list {outcomes}"
+        );
     }
 
     #[test]

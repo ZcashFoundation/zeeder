@@ -665,6 +665,8 @@ distinguishable.
 | `zeeder_activation_ready_groups` | Gauge | `network=mainnet\|testnet` | Groups qualifying in the latest in-process activation sweep | below 75% of total after confirmation height, where the floor is below the compiled target |
 | `zeeder_activation_total_groups` | Gauge | `network=mainnet\|testnet` | Groups sampled in the latest in-process activation sweep | < 12 after confirmation height, where the floor is below the compiled target |
 | `zeeder_activation_qualifying_sweeps` | Gauge | `network=mainnet\|testnet` | Consecutive qualifying in-process activation sweeps | remains < 3 after confirmation height, where the floor is below the compiled target |
+| `zeeder_activation_confirmed` | Gauge | `network=mainnet\|testnet` | `1` once the compiled activation target is confirmed, by observation or a persisted record; `0` while observing | `0` long after confirmation height |
+| `zeeder_activation_probes_total` | Counter | `network=mainnet\|testnet`, `outcome=ready\|connect_failed\|handshake_closed\|handshake_timeout\|handshake_failed\|below_confirmation_height\|outdated_version\|not_full_node\|probe_task_failed` | Activation probes by outcome; non-ready outcomes report the first unmet condition | non-`ready` outcomes dominate `increase()` over a recent window after confirmation height; any `probe_task_failed` |
 | `zeeder_build_info` | Gauge | `version`, `git_sha`, `network` | Build and network identification | - |
 | `zeeder_mutex_poisoning_total` | Counter | `network=mainnet\|testnet` | Mutex poisoning events | > 0 |
 | `zeeder_dns_rate_limited_total` | Counter | - | Rate-limited queries | Spike indicates attack |
@@ -683,13 +685,40 @@ address-book gauges (`candidate_set.*`, `pool.num_ready`, `pool.num_unready`,
 their values combine both crawlers. Use the `zeeder_*` metrics above for
 per-network monitoring.
 
-Scope activation alerts to networks whose `zeeder_min_protocol_version` is below
-the compiled target's protocol version. A network confirmed from a persisted
-record returns from its observer immediately and publishes zero for every
-`zeeder_activation_*` gauge, so those values do not indicate a problem there.
-While the floor is below the target, a low ready-group count is expected until
-upgraded groups reach 75%. Sweeps run at least 125 seconds apart, so 3
-consecutive qualifying sweeps span at least 250 seconds.
+Scope activation alerts to networks where `zeeder_activation_confirmed` is `0`.
+A network confirmed from a persisted record returns from its observer
+immediately: it publishes zero for the ready-group, total-group, and
+qualifying-sweep gauges and no probe outcomes, so those values do not indicate
+a problem there. While the floor is below the target, a low ready-group count is
+expected until upgraded groups reach 75%. When it stays low after the
+confirmation height, the `zeeder_activation_probes_total` outcomes say why:
+
+- `connect_failed`: the TCP connection failed, for example because nothing
+  listens on the peer's port.
+- `handshake_closed`: the peer accepted the connection, then closed or reset it
+  during the handshake. Zebra peers do this when their inbound slots are full,
+  or when they accepted another connection from the seeder's address within the
+  last 119 seconds.
+- `handshake_timeout`: the peer did not complete the connection or answer the
+  handshake in time.
+- `handshake_failed`: the handshake failed for another protocol reason.
+- `below_confirmation_height`, `outdated_version`, and `not_full_node`: the
+  peer answered but did not qualify, reported as the first unmet condition.
+  `outdated_version` also covers peers that zebra-network rejects as obsolete
+  during the handshake.
+- `probe_task_failed`: an internal Zeeder failure, not a peer result.
+
+Each outcome is published at zero when observation starts. The counter is
+cumulative from process start, so a node started before the confirmation height
+carries `below_confirmation_height` totals from that period. Read the outcomes
+over a recent window instead:
+
+```promql
+sum by (outcome) (increase(zeeder_activation_probes_total{network="mainnet"}[30m]))
+```
+
+Sweeps run at least 125 seconds apart, so 3 consecutive qualifying sweeps span
+at least 250 seconds.
 
 ### Prometheus Queries
 
