@@ -140,7 +140,7 @@ async fn spawn_network_crawler(
     )
     .set(1.0);
 
-    let (peer_set, address_book, misbehavior_sender) = zebra_network::init(
+    let (peer_set, address_book, misbehavior_sender, _block_advertiser) = zebra_network::init(
         network_config,
         inbound_service,
         tip.clone(),
