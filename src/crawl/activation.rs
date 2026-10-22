@@ -706,13 +706,13 @@ mod tests {
     }
 
     #[test]
-    fn latest_mainnet_target_requires_reorg_safe_nu6_3_depth() {
+    fn latest_mainnet_target_requires_reorg_safe_nu7_depth() {
         let target = ActivationTarget::latest(&Network::Mainnet);
 
-        assert_eq!(target.activation_height, Height(3_428_143));
-        assert_eq!(target.confirmation_height, Height(3_429_143));
-        assert_eq!(target.required_version, Version(170_160));
-        assert_eq!(target.pre_activation_height, Height(3_428_142));
+        assert_eq!(target.activation_height, Height(3_543_405));
+        assert_eq!(target.confirmation_height, Height(3_544_405));
+        assert_eq!(target.required_version, Version(170_190));
+        assert_eq!(target.pre_activation_height, Height(3_543_404));
     }
 
     #[test]
@@ -882,20 +882,20 @@ mod tests {
     }
 
     #[test]
-    fn v1_6_3_mainnet_confirmation_record_still_matches() {
-        let record = "activation_height=3428143\nconfirmation_height=3429143\nminimum_protocol_version=170160\n";
+    fn v1_7_0_testnet_confirmation_record_still_matches() {
+        let record = "activation_height=4465026\nconfirmation_height=4466026\nminimum_protocol_version=170180\n";
 
-        assert!(ActivationTarget::latest(&Network::Mainnet).matches_confirmation_record(record));
+        assert!(
+            ActivationTarget::latest(&Network::new_default_testnet())
+                .matches_confirmation_record(record)
+        );
     }
 
     #[test]
-    fn nu6_3_testnet_confirmation_record_no_longer_matches() {
-        let record = "activation_height=4134000\nconfirmation_height=4135000\nminimum_protocol_version=170160\n";
+    fn nu6_3_mainnet_confirmation_record_no_longer_matches() {
+        let record = "activation_height=3428143\nconfirmation_height=3429143\nminimum_protocol_version=170160\n";
 
-        assert!(
-            !ActivationTarget::latest(&Network::new_default_testnet())
-                .matches_confirmation_record(record)
-        );
+        assert!(!ActivationTarget::latest(&Network::Mainnet).matches_confirmation_record(record));
     }
 
     #[test]
@@ -905,8 +905,8 @@ mod tests {
 
         assert!(target.matches_confirmation_record(&record));
         assert!(!target.matches_confirmation_record(&record.replace(
-            "minimum_protocol_version=170160",
-            "minimum_protocol_version=170150"
+            "minimum_protocol_version=170190",
+            "minimum_protocol_version=170160"
         )));
     }
 

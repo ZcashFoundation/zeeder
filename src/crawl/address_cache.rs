@@ -402,6 +402,7 @@ mod tests {
         book.update(MetaAddr::new_misbehavior(
             offender,
             MAX_PEER_MISBEHAVIOR_SCORE,
+            "test ban",
         ));
         update_connected_peer(&mut book, sibling, PeerServices::NODE_NETWORK, false);
 
@@ -609,7 +610,11 @@ mod tests {
         update_connected_peer(&mut book, addr, PeerServices::NODE_NETWORK, false);
         assert_eq!(book.len(), 1, "the peer starts in the book");
 
-        book.update(MetaAddr::new_misbehavior(addr, MAX_PEER_MISBEHAVIOR_SCORE));
+        book.update(MetaAddr::new_misbehavior(
+            addr,
+            MAX_PEER_MISBEHAVIOR_SCORE,
+            "test ban",
+        ));
 
         assert_eq!(book.len(), 0, "a banned peer is removed from the book");
         assert!(

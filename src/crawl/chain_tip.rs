@@ -120,14 +120,14 @@ mod tests {
             // old-version peers unobservable even while this synthetic tip
             // remains below activation. Re-evaluate the observer contract
             // before changing this assertion.
-            Version(170_150)
+            Version(170_160)
         );
 
         tip.confirm_activation();
 
         assert_eq!(
             Version::min_remote_for_height(&network, tip.best_tip_height()),
-            Version(170_160)
+            Version(170_190)
         );
     }
 
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn confirmed_mainnet_floor_matches_the_compiled_target() {
-        assert_eq!(version_floor(&Network::Mainnet, true), Version(170_160));
+        assert_eq!(version_floor(&Network::Mainnet, true), Version(170_190));
     }
 
     #[test]
