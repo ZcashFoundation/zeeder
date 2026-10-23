@@ -1,6 +1,6 @@
 [package]
 name = "zeeder"
-version = "1.6.3"
+version = "1.8.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Zeeder, a Zcash DNS seeder based on the Zebra architecture."
@@ -42,8 +42,8 @@ color-eyre = { version = "0.6", default-features = false, features = [
     "track-caller",
 ] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
-zebra-network = { version = "13.0.0", default-features = false }
-zebra-chain = { version = "13.0.1", default-features = false }
+zebra-network = { version = "15.0.0", default-features = false }
+zebra-chain = { version = "15.0.0", default-features = false }
 dotenvy = { version = "0.15.7", default-features = false }
 rand = { version = "0.10.1", default-features = false, features = [
     "thread_rng",

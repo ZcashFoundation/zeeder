@@ -17,7 +17,12 @@ concurrency:
   queue: max
 
 env:
+  # The fleet pins and rolls this repository. Build jobs push here by digest.
   HUB_IMAGE: docker.io/zfnd/dnsseeder
+  # Receives the same manifest, tags, signature and attestations while the
+  # image moves to its own name (issue #55). Once the fleet is repinned here,
+  # this becomes HUB_IMAGE and the old repository stops being published.
+  HUB_MIRROR: docker.io/zfnd/zeeder
 
 jobs:
   preflight:
@@ -148,7 +153,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 #v6.2.0
         with:
-          images: ${{ env.HUB_IMAGE }}
+          images: |
+            ${{ env.HUB_IMAGE }}
+            ${{ env.HUB_MIRROR }}
           # Each release is tagged in both styles (`1.4.0` and `v1.4.0`): bare
           # is the Docker norm, v-prefixed continues the existing tag line.
           # `latest` is added automatically for stable semver, never for pre-releases.
@@ -180,10 +187,28 @@ jobs:
             --format '{{json .Manifest}}' | jq -r '.digest' | tee /tmp/digest.txt
           echo "digest=$(cat /tmp/digest.txt)" >> "${GITHUB_OUTPUT}"
 
+          # Signing and pinning address both repositories by one digest, so a
+          # mirror that received a different manifest must stop the release.
+          mirror_digest="$(docker buildx imagetools inspect "${HUB_MIRROR}:${VERSION}" \
+            --format '{{json .Manifest}}' | jq -r '.digest')"
+          if [ "${mirror_digest}" != "$(cat /tmp/digest.txt)" ]; then
+            echo "::error::${HUB_MIRROR} digest ${mirror_digest} differs from ${HUB_IMAGE} digest $(cat /tmp/digest.txt)"
+            exit 1
+          fi
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ${{ env.HUB_IMAGE }}
+          subject-digest: ${{ steps.create.outputs.digest }}
+          push-to-registry: true
+
+      # Attestations and signatures are stored in the image's own repository,
+      # so the mirror needs its own copies to verify on its own.
+      - name: Attest build provenance (mirror)
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ env.HUB_MIRROR }}
           subject-digest: ${{ steps.create.outputs.digest }}
           push-to-registry: true
 
@@ -193,7 +218,11 @@ jobs:
       - name: Sign the image with Cosign
         env:
           DIGEST: ${{ steps.create.outputs.digest }}
-        run: cosign sign --yes "${HUB_IMAGE}@${DIGEST}"
+        run: |
+          set -euo pipefail
+          for image in "${HUB_IMAGE}" "${HUB_MIRROR}"; do
+            cosign sign --yes "${image}@${DIGEST}"
+          done
 
       - name: Generate SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
@@ -211,6 +240,14 @@ jobs:
           sbom-path: sbom.spdx.json
           push-to-registry: true
 
+      - name: Attest SBOM (mirror)
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-name: ${{ env.HUB_MIRROR }}
+          subject-digest: ${{ steps.create.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+
       - name: Verify release signatures
         env:
           DIGEST: ${{ steps.create.outputs.digest }}
@@ -218,12 +255,14 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          cosign verify "${HUB_IMAGE}@${DIGEST}" \
-            --certificate-identity-regexp="^https://github\\.com/${REPOSITORY}/\\.github/workflows/release\\.yml@" \
-            --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
-          gh attestation verify "oci://${HUB_IMAGE}@${DIGEST}" \
-            --repo "${REPOSITORY}" \
-            --signer-workflow "${REPOSITORY}/.github/workflows/release.yml"
+          for image in "${HUB_IMAGE}" "${HUB_MIRROR}"; do
+            cosign verify "${image}@${DIGEST}" \
+              --certificate-identity-regexp="^https://github\\.com/${REPOSITORY}/\\.github/workflows/release\\.yml@" \
+              --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
+            gh attestation verify "oci://${image}@${DIGEST}" \
+              --repo "${REPOSITORY}" \
+              --signer-workflow "${REPOSITORY}/.github/workflows/release.yml"
+          done
 
   pin-deploy:
     name: Pin fleet image
