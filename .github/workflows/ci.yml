@@ -33,13 +33,13 @@ jobs:
       run: cargo fmt --all -- --check
       
     - name: Clippy Check
-      run: cargo clippy --all-targets --all-features -- -D warnings
+      run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
     - name: Run Tests
-      run: cargo nextest run --verbose
+      run: cargo nextest run --locked --verbose
 
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --locked --verbose
 
   docker:
     runs-on: ubuntu-latest
