@@ -12,7 +12,9 @@ seeders and supersedes the CoreDNS-based
 [dnsseeder](https://github.com/ZcashFoundation/dnsseeder) plugin and its
 [coredns-zcash](https://github.com/ZcashFoundation/coredns-zcash) deployment
 harness. Images are published to
-[zfnd/dnsseeder](https://hub.docker.com/r/zfnd/dnsseeder).
+[zfnd/zeeder](https://hub.docker.com/r/zfnd/zeeder). The earlier image name,
+`zfnd/dnsseeder`, is being retired: see
+[issue 55](https://github.com/ZcashFoundation/zeeder/issues/55).
 
 ## Quickstart
 

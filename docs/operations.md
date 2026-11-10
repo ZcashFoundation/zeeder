@@ -219,7 +219,7 @@ name: zeeder
 
 services:
   seeder:
-    image: zfnd/dnsseeder
+    image: zfnd/zeeder
     restart: unless-stopped
     ports:
       - "53:1053/udp"
@@ -278,11 +278,11 @@ Release images are Cosign-signed and carry build-provenance and SBOM
 attestations. Verify a pulled image before trusting it:
 
 ```bash
-cosign verify docker.io/zfnd/dnsseeder:latest \
+cosign verify docker.io/zfnd/zeeder:latest \
   --certificate-identity-regexp='^https://github\.com/ZcashFoundation/zeeder/\.github/workflows/release\.yml@' \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 
-gh attestation verify oci://docker.io/zfnd/dnsseeder:latest \
+gh attestation verify oci://docker.io/zfnd/zeeder:latest \
   --repo ZcashFoundation/zeeder
 ```
 
