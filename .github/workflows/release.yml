@@ -18,11 +18,11 @@ concurrency:
 
 env:
   # The fleet pins and rolls this repository. Build jobs push here by digest.
-  HUB_IMAGE: docker.io/zfnd/dnsseeder
-  # Receives the same manifest, tags, signature and attestations while the
-  # image moves to its own name (issue #55). Once the fleet is repinned here,
-  # this becomes HUB_IMAGE and the old repository stops being published.
-  HUB_MIRROR: docker.io/zfnd/zeeder
+  HUB_IMAGE: docker.io/zfnd/zeeder
+  # The previous image name. It receives the same manifest, tags, signature
+  # and attestations until its announced retirement (issue #55), when this
+  # mirror and its steps are removed.
+  HUB_MIRROR: docker.io/zfnd/dnsseeder
 
 jobs:
   preflight:
