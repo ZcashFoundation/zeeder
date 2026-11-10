@@ -140,7 +140,7 @@ jobs:
         shellcheck deploy/gcp/*.sh
         bash -n deploy/gcp/seeders.sh
         sed \
-          -e 's#__IMAGE_REF__#docker.io/zfnd/dnsseeder@sha256:1111111111111111111111111111111111111111111111111111111111111111#g' \
+          -e 's#__IMAGE_REF__#docker.io/zfnd/zeeder@sha256:1111111111111111111111111111111111111111111111111111111111111111#g' \
           deploy/gcp/startup-script.sh.tmpl > /tmp/startup-script.sh
         bash -n /tmp/startup-script.sh
         scoped_redirects="$(grep -c -- "-A PREROUTING -i \"\${DNS_INGRESS_INTERFACE}\"" /tmp/startup-script.sh)"
